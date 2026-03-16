@@ -21,6 +21,6 @@ jobs:
 
       - name: Push main to burnside-project org
         run: |
-          git remote add mirror https://x-access-token:${{ secrets.BURNSIDE_MIRROR_PAT }}@github.com/burnside-project/pg-warehouse.git
+          git remote add mirror https://x-access-token:${{ secrets.MIRROR_PAT }}@github.com/burnside-project/pg-warehouse.git
           git push mirror main --force
           git push mirror --force --tags
