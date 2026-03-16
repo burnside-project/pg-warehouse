@@ -1,6 +1,8 @@
 # Binaries
-pg-warehouse
+/pg-warehouse
 *.exe
+*.out
+*.test
 
 # DuckDB files
 *.duckdb

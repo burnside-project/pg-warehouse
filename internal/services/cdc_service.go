@@ -113,7 +113,7 @@ func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs 
 		}
 		return fmt.Errorf("failed to acquire execution lock")
 	}
-	defer s.state.ReleaseLock(ctx)
+	defer func() { _ = s.state.ReleaseLock(ctx) }()
 
 	_ = s.state.AddAuditEntry(ctx, models.AuditInfo, models.EventCDCStart,
 		"CDC streaming started", map[string]any{"slot": cfg.SlotName})
