@@ -17,6 +17,15 @@
 
 ---
 
+![1.png](assets/1.png)
+
+---
+![2.png](assets/2.png)
+
+---
+
+![3.png](assets/3.png)
+
 ```console
 $ pg-warehouse init --pg-url postgres://user:pass@localhost:5432/appdb
 Initialized warehouse at ./warehouse.duckdb
