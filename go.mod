@@ -1,6 +1,6 @@
 module github.com/burnside-project/pg-warehouse
 
-go 1.25.5
+go 1.24.0
 
 require (
 	github.com/jackc/pglogrepl v0.0.0-20251213150135-2e8d0df862c1

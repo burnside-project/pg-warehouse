@@ -14,7 +14,7 @@ state:
 
 ## Design Principles
 
-Adopted from the [project-collector-agent](https://github.com/dataalgebra-engineering/project-collector-agent) battle-tested patterns:
+Adopted from battle-tested patterns:
 
 1. **Single-writer serialization** — `MaxOpenConns=1` prevents write conflicts
 2. **WAL mode** — Write-Ahead Logging for concurrent reads during writes
