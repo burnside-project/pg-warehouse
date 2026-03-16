@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a Bug
+    url: https://github.com/dataalgebra-engineering/burnside-project-pg-warehouse-oss/issues/new?template=bug_report.yml
+    about: This is a read-only mirror. Please file bugs on the source repository.
+  - name: Request a Feature
+    url: https://github.com/dataalgebra-engineering/burnside-project-pg-warehouse-oss/issues/new?template=feature_request.yml
+    about: This is a read-only mirror. Please request features on the source repository.
   - name: Questions and Discussion
     url: https://github.com/burnside-project/pg-warehouse/discussions
     about: Ask questions, share ideas, or discuss pg-warehouse usage
