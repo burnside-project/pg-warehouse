@@ -11,7 +11,7 @@ COPY . .
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X github.com/burnside-project/pg-warehouse/pkg/version.Version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o /pg-warehouse ./cmd/pg-warehouse/
 
 # Runtime stage
-FROM alpine:3.20
+FROM alpine:3.23
 
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /pg-warehouse /usr/local/bin/pg-warehouse
