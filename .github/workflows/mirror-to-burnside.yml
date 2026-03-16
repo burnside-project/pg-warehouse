@@ -1,0 +1,25 @@
+name: Mirror to Burnside Project Org
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'yes' to confirm mirror push to public repo"
+        required: true
+        type: string
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'yes'
+    steps:
+      - name: Checkout source repo (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push main to burnside-project org
+        run: |
+          git remote add mirror https://x-access-token:${{ secrets.BURNSIDE_MIRROR_PAT }}@github.com/burnside-project/pg-warehouse.git
+          git push mirror main --force
+          git push mirror --force --tags

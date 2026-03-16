@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pgwh
+      POSTGRES_PASSWORD: pgwh
+      POSTGRES_DB: demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./examples/docker-compose-local/seed.sql:/docker-entrypoint-initdb.d/seed.sql
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_replication_slots=4
+        -c max_wal_senders=4
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgwh -d demo"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  pg-warehouse:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./examples/docker-compose-local/pg-warehouse.yml:/app/pg-warehouse.yml
+      - warehouse-data:/app/data
+    working_dir: /app
+    command: ["init", "--config", "pg-warehouse.yml", "--duckdb", "/app/data/warehouse.duckdb"]
+
+volumes:
+  warehouse-data:

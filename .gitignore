@@ -1,0 +1,22 @@
+# Binaries
+pg-warehouse
+*.exe
+
+# DuckDB files
+*.duckdb
+*.duckdb.wal
+
+# Output files
+out/
+*.parquet
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
