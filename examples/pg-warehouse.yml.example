@@ -1,0 +1,36 @@
+project:
+  name: demo_warehouse
+
+postgres:
+  url: postgres://user:pass@localhost:5432/appdb
+  schema: public
+
+duckdb:
+  path: ./warehouse.duckdb
+
+sync:
+  mode: incremental
+  default_batch_size: 50000
+  tables:
+    - name: public.orders
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: updated_at
+
+    - name: public.customers
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: updated_at
+
+    - name: public.events
+      target_schema: raw
+      primary_key: [event_id]
+      watermark_column: created_at
+
+run:
+  default_output_dir: ./out
+  default_file_type: parquet
+
+logging:
+  level: info
+  format: text

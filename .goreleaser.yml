@@ -1,0 +1,78 @@
+project_name: pg-warehouse
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: pg-warehouse
+    main: ./cmd/pg-warehouse/
+    binary: pg-warehouse
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/burnside-project/pg-warehouse/pkg/version.Version={{.Version}}
+    overrides:
+      - goos: linux
+        goarch: amd64
+        env:
+          - CC=x86_64-linux-gnu-gcc
+      - goos: linux
+        goarch: arm64
+        env:
+          - CC=aarch64-linux-gnu-gcc
+      - goos: darwin
+        goarch: amd64
+        env:
+          - CC=o64-clang
+      - goos: darwin
+        goarch: arm64
+        env:
+          - CC=oa64-clang
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+brews:
+  - name: pg-warehouse
+    repository:
+      owner: burnside-project
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://burnsideproject.ai"
+    description: "Local-first PostgreSQL to DuckDB analytics warehouse"
+    license: "Apache-2.0"
+    install: |
+      bin.install "pg-warehouse"
+    test: |
+      system "#{bin}/pg-warehouse", "version"
+
+release:
+  github:
+    owner: burnside-project
+    name: pg-warehouse
+  prerelease: auto
+  name_template: "v{{.Version}}"

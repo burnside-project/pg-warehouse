@@ -1,0 +1,33 @@
+project:
+  name: demo_warehouse
+
+postgres:
+  url: postgres://pgwh:pgwh@postgres:5432/demo
+  schema: public
+
+duckdb:
+  path: /app/data/warehouse.duckdb
+
+state:
+  path: /app/data/.pgwh/state.db
+
+sync:
+  mode: incremental
+  default_batch_size: 50000
+  tables:
+    - name: public.orders
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: updated_at
+    - name: public.customers
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: updated_at
+
+run:
+  default_output_dir: /app/data/out
+  default_file_type: parquet
+
+logging:
+  level: info
+  format: text
