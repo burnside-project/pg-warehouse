@@ -46,7 +46,7 @@ func TestWarehouse_BootstrapCreatesSchemas(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open in-memory duckdb: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	if err := wh.Bootstrap(ctx); err != nil {
 		t.Fatalf("failed to bootstrap: %v", err)
@@ -75,7 +75,7 @@ func TestWarehouse_CreateTableFromRowsWithTypes(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	if err := wh.Bootstrap(ctx); err != nil {
 		t.Fatalf("failed to bootstrap: %v", err)
@@ -119,7 +119,7 @@ func TestWarehouse_CreateTableFromRowsWithoutTypes(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	if err := wh.Bootstrap(ctx); err != nil {
 		t.Fatalf("failed to bootstrap: %v", err)
@@ -149,7 +149,7 @@ func TestWarehouse_QueryRowsRejectsNonSelect(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	_, err := wh.QueryRows(ctx, "CREATE TABLE foo (id INT)", 10)
 	if err == nil {
@@ -163,7 +163,7 @@ func TestWarehouse_QueryRowsAcceptsSelect(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	rows, err := wh.QueryRows(ctx, "SELECT 1 AS num, 'hello' AS msg", 10)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestWarehouse_ExportTable(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	if err := wh.Bootstrap(ctx); err != nil {
 		t.Fatalf("failed to bootstrap: %v", err)
@@ -214,7 +214,7 @@ func TestWarehouse_BatchInsert(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	if err := wh.Bootstrap(ctx); err != nil {
 		t.Fatalf("failed to bootstrap: %v", err)
