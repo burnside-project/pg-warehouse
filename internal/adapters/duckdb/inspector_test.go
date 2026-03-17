@@ -13,7 +13,7 @@ func TestInspector_ListTables(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	if err := wh.Bootstrap(ctx); err != nil {
 		t.Fatalf("failed to bootstrap: %v", err)
@@ -56,7 +56,7 @@ func TestInspector_DescribeTable(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	if err := wh.Bootstrap(ctx); err != nil {
 		t.Fatalf("failed to bootstrap: %v", err)
@@ -93,7 +93,7 @@ func TestInspector_DescribeTable_InvalidName(t *testing.T) {
 	if err := wh.Open(ctx); err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
-	defer wh.Close()
+	defer func() { _ = wh.Close() }()
 
 	inspector := NewInspector(wh.DB())
 	_, err := inspector.DescribeTable(ctx, "no_schema")

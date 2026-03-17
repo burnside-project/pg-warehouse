@@ -13,6 +13,15 @@ import (
 
 const insertBatchSize = 1000
 
+// quoteIdentifier safely quotes a possibly schema-qualified identifier for DuckDB.
+func quoteIdentifier(name string) string {
+	parts := strings.SplitN(name, ".", 2)
+	for i, p := range parts {
+		parts[i] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
+	}
+	return strings.Join(parts, ".")
+}
+
 // Warehouse implements ports.WarehouseStore using DuckDB.
 type Warehouse struct {
 	db   *sql.DB
@@ -67,6 +76,14 @@ func (w *Warehouse) ExecuteSQL(ctx context.Context, sqlStr string) error {
 	return nil
 }
 
+// ExecuteSQLWithArgs runs a single parameterized SQL statement against the warehouse.
+func (w *Warehouse) ExecuteSQLWithArgs(ctx context.Context, sqlStr string, args ...any) error {
+	if _, err := w.db.ExecContext(ctx, sqlStr, args...); err != nil {
+		return fmt.Errorf("failed to execute SQL: %w\nstatement: %s", err, sqlStr)
+	}
+	return nil
+}
+
 // TableExists checks whether a table exists in the warehouse.
 func (w *Warehouse) TableExists(ctx context.Context, table string) (bool, error) {
 	parts := strings.SplitN(table, ".", 2)
@@ -83,7 +100,7 @@ func (w *Warehouse) TableExists(ctx context.Context, table string) (bool, error)
 
 // CountRows returns the row count for a table.
 func (w *Warehouse) CountRows(ctx context.Context, table string) (int64, error) {
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", table)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteIdentifier(table))
 	var count int64
 	if err := w.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return 0, fmt.Errorf("failed to count rows: %w", err)
@@ -105,7 +122,8 @@ func (w *Warehouse) CreateTableFromRows(ctx context.Context, table string, rows 
 	}
 
 	// Drop existing table
-	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", table)
+	quotedTable := quoteIdentifier(table)
+	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", quotedTable)
 	if _, err := w.db.ExecContext(ctx, dropSQL); err != nil {
 		return fmt.Errorf("failed to drop table: %w", err)
 	}
@@ -123,9 +141,9 @@ func (w *Warehouse) CreateTableFromRows(ctx context.Context, table string, rows 
 		if !ok {
 			duckType = "VARCHAR"
 		}
-		colDefs = append(colDefs, fmt.Sprintf("%s %s", col, duckType))
+		colDefs = append(colDefs, fmt.Sprintf("%s %s", quoteIdentifier(col), duckType))
 	}
-	createSQL := fmt.Sprintf("CREATE TABLE %s (%s)", table, strings.Join(colDefs, ", "))
+	createSQL := fmt.Sprintf("CREATE TABLE %s (%s)", quotedTable, strings.Join(colDefs, ", "))
 	if _, err := w.db.ExecContext(ctx, createSQL); err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
@@ -143,6 +161,12 @@ func (w *Warehouse) InsertRows(ctx context.Context, table string, rows []map[str
 	for col := range rows[0] {
 		columns = append(columns, col)
 	}
+
+	quotedCols := make([]string, len(columns))
+	for i, col := range columns {
+		quotedCols[i] = quoteIdentifier(col)
+	}
+	quotedTable := quoteIdentifier(table)
 
 	for i := 0; i < len(rows); i += insertBatchSize {
 		end := i + insertBatchSize
@@ -163,7 +187,7 @@ func (w *Warehouse) InsertRows(ctx context.Context, table string, rows []map[str
 		}
 
 		batchSQL := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s",
-			table, strings.Join(columns, ", "), strings.Join(valueSets, ", "))
+			quotedTable, strings.Join(quotedCols, ", "), strings.Join(valueSets, ", "))
 
 		if _, err := w.db.ExecContext(ctx, batchSQL, allValues...); err != nil {
 			return fmt.Errorf("failed to insert batch: %w", err)
@@ -173,27 +197,56 @@ func (w *Warehouse) InsertRows(ctx context.Context, table string, rows []map[str
 }
 
 // MergeStageToRaw merges staged data into the raw table using primary keys.
+// Dedup: if the stage table contains duplicate primary keys (e.g., a row updated
+// multiple times between syncs), only the last row per PK is kept.
+// The merge runs in a transaction to prevent data loss on crash.
 func (w *Warehouse) MergeStageToRaw(ctx context.Context, stageTable string, rawTable string, primaryKeys []string) error {
-	// Use INSERT OR REPLACE pattern
+	quotedRaw := quoteIdentifier(rawTable)
+	quotedStage := quoteIdentifier(stageTable)
+	quotedPKs := make([]string, len(primaryKeys))
+	for i, pk := range primaryKeys {
+		quotedPKs[i] = quoteIdentifier(pk)
+	}
+	pkList := strings.Join(quotedPKs, ", ")
+
+	// Step 1: Dedup the stage table — keep only the last row per primary key.
+	// Uses ROW_NUMBER() partitioned by PK, ordered by rowid descending (last inserted wins).
+	dedupSQL := fmt.Sprintf(`
+		DELETE FROM %s WHERE rowid NOT IN (
+			SELECT MAX(rowid) FROM %s GROUP BY %s
+		)`,
+		quotedStage, quotedStage, pkList)
+
+	// Step 2: Transactional merge — delete matching PKs from raw, insert from stage, drop stage.
 	mergeSQL := fmt.Sprintf(`
+		BEGIN TRANSACTION;
 		DELETE FROM %s WHERE (%s) IN (SELECT %s FROM %s);
 		INSERT INTO %s SELECT * FROM %s;
 		DROP TABLE IF EXISTS %s;
-	`, rawTable, strings.Join(primaryKeys, ", "), strings.Join(primaryKeys, ", "), stageTable,
-		rawTable, stageTable,
-		stageTable)
+		COMMIT;
+	`, quotedRaw, pkList, pkList, quotedStage,
+		quotedRaw, quotedStage,
+		quotedStage)
+
+	// Run dedup first (outside transaction — operates only on stage).
+	if err := w.ExecuteSQL(ctx, dedupSQL); err != nil {
+		return fmt.Errorf("failed to dedup stage table: %w", err)
+	}
 
 	return w.ExecuteSQL(ctx, mergeSQL)
 }
 
 // ExportTable exports a warehouse table to a file.
 func (w *Warehouse) ExportTable(ctx context.Context, table string, path string, fileType string) error {
+	quotedTable := quoteIdentifier(table)
+	// Escape single quotes in file path to prevent injection
+	safePath := strings.ReplaceAll(path, "'", "''")
 	var exportSQL string
 	switch strings.ToLower(fileType) {
 	case "parquet":
-		exportSQL = fmt.Sprintf("COPY %s TO '%s' (FORMAT PARQUET)", table, path)
+		exportSQL = fmt.Sprintf("COPY %s TO '%s' (FORMAT PARQUET)", quotedTable, safePath)
 	case "csv":
-		exportSQL = fmt.Sprintf("COPY %s TO '%s' (FORMAT CSV, HEADER)", table, path)
+		exportSQL = fmt.Sprintf("COPY %s TO '%s' (FORMAT CSV, HEADER)", quotedTable, safePath)
 	default:
 		return fmt.Errorf("unsupported export format: %s", fileType)
 	}
@@ -209,7 +262,7 @@ func (w *Warehouse) QueryRows(ctx context.Context, query string, limit int) ([]m
 	trimmed := strings.TrimSpace(query)
 	upper := strings.ToUpper(trimmed)
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
-		return nil, fmt.Errorf("preview requires a SELECT or WITH query, got: %.30s...", trimmed)
+		return nil, fmt.Errorf("preview requires a SELECT or WITH query, got: %.30s", trimmed)
 	}
 
 	limitedQuery := fmt.Sprintf("SELECT * FROM (%s) AS preview LIMIT %d", trimmed, limit)
@@ -217,7 +270,7 @@ func (w *Warehouse) QueryRows(ctx context.Context, query string, limit int) ([]m
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute preview query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	columnNames, err := rows.Columns()
 	if err != nil {

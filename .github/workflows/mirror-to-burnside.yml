@@ -19,7 +19,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Push main to burnside-project org
+      - name: Install git-filter-repo
+        run: pip install git-filter-repo
+
+      - name: Strip SPEC.md and rebrand commits
+        run: |
+          git filter-repo \
+            --invert-paths --path SPEC.md \
+            --name-callback 'return b"Burnside Project"' \
+            --email-callback 'return b"hello@burnsideproject.ai"' \
+            --message-callback 'import re; return re.sub(rb"\nCo-[Aa]uthored-[Bb]y:.*", b"", message)' \
+            --force
+
+      - name: Push to burnside-project org
         run: |
           git remote add mirror https://x-access-token:${{ secrets.MIRROR_PAT }}@github.com/burnside-project/pg-warehouse.git
           git push mirror main --force

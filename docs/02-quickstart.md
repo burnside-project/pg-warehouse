@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go 1.21+
+- Go 1.25+
 - PostgreSQL 10+ (for sync) or PostgreSQL 10+ with `wal_level=logical` (for CDC)
 - DuckDB (embedded, no separate install needed)
 

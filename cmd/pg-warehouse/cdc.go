@@ -33,10 +33,10 @@ var cdcSetupCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer pgSource.Close()
+		defer func() { _ = pgSource.Close() }()
 
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
-		defer cdcAdapter.Close()
+		defer func() { _ = cdcAdapter.Close() }()
 
 		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
 		if err := svc.Setup(ctx, app.Cfg.CDC); err != nil {
@@ -67,10 +67,10 @@ var cdcTeardownCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer pgSource.Close()
+		defer func() { _ = pgSource.Close() }()
 
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
-		defer cdcAdapter.Close()
+		defer func() { _ = cdcAdapter.Close() }()
 
 		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
 		if err := svc.Teardown(ctx, app.Cfg.CDC); err != nil {
@@ -108,10 +108,10 @@ var cdcStartCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer pgSource.Close()
+		defer func() { _ = pgSource.Close() }()
 
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
-		defer cdcAdapter.Close()
+		defer func() { _ = cdcAdapter.Close() }()
 
 		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
 
@@ -144,10 +144,10 @@ var cdcStatusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer pgSource.Close()
+		defer func() { _ = pgSource.Close() }()
 
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
-		defer cdcAdapter.Close()
+		defer func() { _ = cdcAdapter.Close() }()
 
 		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
 

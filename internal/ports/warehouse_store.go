@@ -20,6 +20,9 @@ type WarehouseStore interface {
 	// ExecuteSQL runs arbitrary SQL against the warehouse.
 	ExecuteSQL(ctx context.Context, sql string) error
 
+	// ExecuteSQLWithArgs runs parameterized SQL against the warehouse.
+	ExecuteSQLWithArgs(ctx context.Context, sql string, args ...any) error
+
 	// TableExists checks whether a table exists in the warehouse.
 	TableExists(ctx context.Context, table string) (bool, error)
 

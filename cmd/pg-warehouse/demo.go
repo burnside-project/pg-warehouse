@@ -41,7 +41,7 @@ exports results to Parquet. No PostgreSQL connection is needed.`,
 			return fmt.Errorf("failed to create temp directory: %w", err)
 		}
 		if !demoKeep {
-			defer os.RemoveAll(tmpDir)
+			defer func() { _ = os.RemoveAll(tmpDir) }()
 		}
 		fmt.Printf("[1/6] Created temp directory: %s\n", tmpDir)
 
@@ -51,7 +51,7 @@ exports results to Parquet. No PostgreSQL connection is needed.`,
 		if err := wh.Open(ctx); err != nil {
 			return fmt.Errorf("failed to open warehouse: %w", err)
 		}
-		defer wh.Close()
+		defer func() { _ = wh.Close() }()
 
 		if err := wh.Bootstrap(ctx); err != nil {
 			return fmt.Errorf("failed to bootstrap warehouse: %w", err)
@@ -108,10 +108,10 @@ ORDER BY lifetime_value DESC
 			return fmt.Errorf("failed to preview results: %w", err)
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tNAME\tSEGMENT\tORDERS\tLTV\tAVG ORDER")
-		fmt.Fprintln(tw, "--\t----\t-------\t------\t---\t---------")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tSEGMENT\tORDERS\tLTV\tAVG ORDER")
+		_, _ = fmt.Fprintln(tw, "--\t----\t-------\t------\t---\t---------")
 		for _, row := range previewRows {
-			fmt.Fprintf(tw, "%v\t%v\t%v\t%v\t$%v\t$%v\n",
+			_, _ = fmt.Fprintf(tw, "%v\t%v\t%v\t%v\t$%v\t$%v\n",
 				row["customer_id"],
 				row["customer_name"],
 				row["segment"],
@@ -120,7 +120,7 @@ ORDER BY lifetime_value DESC
 				row["avg_order_value"],
 			)
 		}
-		tw.Flush()
+		_ = tw.Flush()
 		fmt.Println()
 
 		// ── Export to Parquet ────────────────────────────────────────────

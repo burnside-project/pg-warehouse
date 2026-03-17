@@ -83,16 +83,16 @@ func Bold(msg string) string {
 // Table prints headers and rows as an aligned table using tabwriter.
 func Table(headers []string, rows [][]string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, strings.Join(headers, "\t"))
+	_, _ = fmt.Fprintln(w, strings.Join(headers, "\t"))
 	sep := make([]string, len(headers))
 	for i, h := range headers {
 		sep[i] = strings.Repeat("-", len(h))
 	}
-	fmt.Fprintln(w, strings.Join(sep, "\t"))
+	_, _ = fmt.Fprintln(w, strings.Join(sep, "\t"))
 	for _, row := range rows {
-		fmt.Fprintln(w, strings.Join(row, "\t"))
+		_, _ = fmt.Fprintln(w, strings.Join(row, "\t"))
 	}
-	w.Flush()
+	_ = w.Flush()
 }
 
 // JSON marshals v to indented JSON and prints it to stdout.

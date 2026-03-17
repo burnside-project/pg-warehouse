@@ -3,8 +3,12 @@ package sync
 import "fmt"
 
 // DetermineMode decides whether to do a full or incremental sync for a table.
+// If modeOverride is "full", it always returns SyncModeFull (explicit full sync requested).
 // If there is no previous watermark or no watermark column configured, it falls back to full.
-func DetermineMode(watermarkColumn string, lastWatermark string) SyncMode {
+func DetermineMode(modeOverride string, watermarkColumn string, lastWatermark string) SyncMode {
+	if modeOverride == "full" {
+		return SyncModeFull
+	}
 	if watermarkColumn == "" || lastWatermark == "" {
 		return SyncModeFull
 	}

@@ -48,13 +48,13 @@ func NewStore(path string) (*Store, error) {
 
 	// Bootstrap schema
 	if _, err := db.ExecContext(ctx, bootstrapSQL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to bootstrap state db: %w", err)
 	}
 
 	// Run migrations
 	if err := migrate(ctx, db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to migrate state db: %w", err)
 	}
 
@@ -105,7 +105,7 @@ func (s *Store) GetAllSyncStates(ctx context.Context) ([]models.SyncState, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all sync states: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var states []models.SyncState
 	for rows.Next() {
@@ -264,7 +264,7 @@ func (s *Store) GetAllCDCStates(ctx context.Context) ([]models.CDCState, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all CDC states: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var states []models.CDCState
 	for rows.Next() {
@@ -335,7 +335,7 @@ func (s *Store) GetRecentAuditEntries(ctx context.Context, limit int) ([]models.
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audit entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []models.AuditEntry
 	for rows.Next() {

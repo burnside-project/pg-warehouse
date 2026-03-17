@@ -30,7 +30,7 @@ func (i *Inspector) ListTables(ctx context.Context) ([]models.TableInfo, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tables []models.TableInfo
 	for rows.Next() {
@@ -67,7 +67,7 @@ func (i *Inspector) DescribeTable(ctx context.Context, table string) (*models.Ta
 	if err != nil {
 		return nil, fmt.Errorf("failed to describe table: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := &models.TableSchema{
 		Schema: schema,

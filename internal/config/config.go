@@ -65,4 +65,16 @@ func ApplyDefaults(cfg *models.ProjectConfig) {
 	if cfg.CDC.SlotName == "" {
 		cfg.CDC.SlotName = DefaultSlotName
 	}
+
+	// Cap max_conns at 5 per configuration contract (06-configuration.md)
+	if cfg.Postgres.MaxConns > 5 {
+		cfg.Postgres.MaxConns = 5
+	}
+
+	// Default target_schema to "raw" (06-configuration.md)
+	for i := range cfg.Sync.Tables {
+		if cfg.Sync.Tables[i].TargetSchema == "" {
+			cfg.Sync.Tables[i].TargetSchema = "raw"
+		}
+	}
 }

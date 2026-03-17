@@ -13,28 +13,53 @@ import (
 
 // Source implements ports.PostgresSource using pgxpool.
 type Source struct {
-	pool *pgxpool.Pool
-	url  string
+	pool         *pgxpool.Pool
+	url          string
+	queryTimeout time.Duration
 }
 
 // NewSource creates a new PostgreSQL source adapter backed by a pgxpool connection pool.
-func NewSource(url string) (*Source, error) {
-	cfg, err := pgxpool.ParseConfig(url)
+// It accepts the full PostgresCfg to apply max_conns (capped at 5), connect_timeout, and query_timeout.
+func NewSource(pgCfg models.PostgresCfg) (*Source, error) {
+	cfg, err := pgxpool.ParseConfig(pgCfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse postgres connection config: %w", err)
 	}
 
-	cfg.MaxConns = 2
+	// Apply max_conns, capped at 5 per configuration contract.
+	maxConns := pgCfg.MaxConns
+	if maxConns <= 0 {
+		maxConns = 2
+	}
+	if maxConns > 5 {
+		maxConns = 5
+	}
+	cfg.MaxConns = int32(maxConns)
 	cfg.HealthCheckPeriod = 30 * time.Second
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
+
+	// Apply connect_timeout.
+	if pgCfg.ConnectTimeout != "" {
+		if d, err := time.ParseDuration(pgCfg.ConnectTimeout); err == nil {
+			cfg.ConnConfig.ConnectTimeout = d
+		}
+	}
+
+	// Parse query_timeout for use in query contexts.
+	var queryTimeout time.Duration
+	if pgCfg.QueryTimeout != "" {
+		if d, err := time.ParseDuration(pgCfg.QueryTimeout); err == nil {
+			queryTimeout = d
+		}
+	}
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create postgres connection pool: %w", err)
 	}
 
-	return &Source{pool: pool, url: url}, nil
+	return &Source{pool: pool, url: pgCfg.URL, queryTimeout: queryTimeout}, nil
 }
 
 // Ping checks connectivity to PostgreSQL.
@@ -101,11 +126,11 @@ func (s *Source) FetchFull(ctx context.Context, table string, batchSize int) ([]
 	return s.fetchRows(ctx, query)
 }
 
-// FetchIncremental reads rows where watermarkColumn > lastWatermark.
+// FetchIncremental reads rows where watermarkColumn > lastWatermark, limited by batchSize.
 func (s *Source) FetchIncremental(ctx context.Context, table string, watermarkColumn string, lastWatermark string, batchSize int) ([]map[string]any, error) {
 	quotedWM := pgx.Identifier{watermarkColumn}.Sanitize()
-	query := fmt.Sprintf("SELECT * FROM %s WHERE %s > $1 ORDER BY %s", quoteTable(table), quotedWM, quotedWM)
-	return s.fetchRowsWithArgs(ctx, query, lastWatermark)
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s > $1 ORDER BY %s LIMIT $2", quoteTable(table), quotedWM, quotedWM)
+	return s.fetchRowsWithArgs(ctx, query, lastWatermark, batchSize)
 }
 
 // Pool returns the underlying connection pool for sharing with other adapters (e.g. CDC).
@@ -135,6 +160,11 @@ func (s *Source) fetchRows(ctx context.Context, query string) ([]map[string]any,
 }
 
 func (s *Source) fetchRowsWithArgs(ctx context.Context, query string, args ...any) ([]map[string]any, error) {
+	if s.queryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.queryTimeout)
+		defer cancel()
+	}
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)

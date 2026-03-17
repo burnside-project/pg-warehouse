@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/burnside-project/pg-warehouse/internal/services"
+	"github.com/burnside-project/pg-warehouse/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -32,8 +35,30 @@ var runCmd = &cobra.Command{
 		}
 
 		svc := services.NewRunService(app.WH, app.State, app.Logger)
-		return svc.Run(ctx, runSQLFile, runTargetTable, runOutputPath, fileType)
+		rowCount, err := svc.Run(ctx, runSQLFile, runTargetTable, runOutputPath, fileType)
+		if err != nil {
+			return err
+		}
+
+		if runOutputPath != "" {
+			fi, _ := os.Stat(runOutputPath)
+			if fi != nil {
+				ui.Success(fmt.Sprintf("Wrote %d rows to %s (%s)", rowCount, runOutputPath, humanizeBytes(fi.Size())))
+			}
+		}
+		return nil
 	},
+}
+
+func humanizeBytes(b int64) string {
+	switch {
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(b)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func init() {

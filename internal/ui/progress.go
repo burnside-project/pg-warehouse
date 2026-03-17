@@ -69,7 +69,7 @@ func (p *Progress) Done() {
 		return
 	}
 	p.render()
-	fmt.Fprintln(os.Stdout)
+	_, _ = fmt.Fprintln(os.Stdout)
 }
 
 // render draws the progress bar using \r to overwrite the current line.
@@ -94,5 +94,5 @@ func (p *Progress) render() {
 		bar[i] = '.'
 	}
 
-	fmt.Fprintf(os.Stdout, "\r  %s [%s] %d%% (%d/%d)", p.label, string(bar), pct, p.current, p.total)
+	_, _ = fmt.Fprintf(os.Stdout, "\r  %s [%s] %d%% (%d/%d)", p.label, string(bar), pct, p.current, p.total)
 }
