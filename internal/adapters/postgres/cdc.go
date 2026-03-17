@@ -57,7 +57,7 @@ func (c *CDCAdapter) Setup(ctx context.Context, tables []string, publicationName
 	if err != nil {
 		return fmt.Errorf("failed to connect for replication: %w", err)
 	}
-	defer replConn.Close(ctx)
+	defer func() { _ = replConn.Close(ctx) }()
 
 	_, err = pglogrepl.CreateReplicationSlot(ctx, replConn, slotName, "pgoutput",
 		pglogrepl.CreateReplicationSlotOptions{
@@ -178,7 +178,7 @@ func (c *CDCAdapter) Stream(ctx context.Context, slotName string, publicationNam
 	c.replConn = replConn
 	defer func() {
 		c.replConn = nil
-		replConn.Close(context.Background())
+		_ = replConn.Close(context.Background())
 	}()
 
 	lsn, err := pglogrepl.ParseLSN(startLSN)

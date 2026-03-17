@@ -59,7 +59,7 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to create state db: %w", err)
 		}
-		defer stateStore.Close()
+		defer func() { _ = stateStore.Close() }()
 
 		fmt.Println("pg-warehouse initialized successfully")
 		fmt.Printf("  warehouse: %s\n", cfg.DuckDB.Path)

@@ -88,9 +88,9 @@ func (a *App) NewPostgresSource() (*postgres.Source, error) {
 // Close releases all resources held by the App.
 func (a *App) Close() {
 	if a.State != nil {
-		a.State.Close()
+		_ = a.State.Close()
 	}
 	if a.WH != nil {
-		a.WH.Close()
+		_ = a.WH.Close()
 	}
 }

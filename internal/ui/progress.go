@@ -94,5 +94,5 @@ func (p *Progress) render() {
 		bar[i] = '.'
 	}
 
-	fmt.Fprintf(os.Stdout, "\r  %s [%s] %d%% (%d/%d)", p.label, string(bar), pct, p.current, p.total)
+	_, _ = fmt.Fprintf(os.Stdout, "\r  %s [%s] %d%% (%d/%d)", p.label, string(bar), pct, p.current, p.total)
 }

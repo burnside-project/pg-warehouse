@@ -48,13 +48,13 @@ func NewStore(path string) (*Store, error) {
 
 	// Bootstrap schema
 	if _, err := db.ExecContext(ctx, bootstrapSQL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to bootstrap state db: %w", err)
 	}
 
 	// Run migrations
 	if err := migrate(ctx, db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to migrate state db: %w", err)
 	}
 

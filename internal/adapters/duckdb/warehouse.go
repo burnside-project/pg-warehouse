@@ -262,7 +262,7 @@ func (w *Warehouse) QueryRows(ctx context.Context, query string, limit int) ([]m
 	trimmed := strings.TrimSpace(query)
 	upper := strings.ToUpper(trimmed)
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
-		return nil, fmt.Errorf("preview requires a SELECT or WITH query, got: %.30s...", trimmed)
+		return nil, fmt.Errorf("preview requires a SELECT or WITH query, got: %.30s", trimmed)
 	}
 
 	limitedQuery := fmt.Sprintf("SELECT * FROM (%s) AS preview LIMIT %d", trimmed, limit)
@@ -270,7 +270,7 @@ func (w *Warehouse) QueryRows(ctx context.Context, query string, limit int) ([]m
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute preview query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	columnNames, err := rows.Columns()
 	if err != nil {
