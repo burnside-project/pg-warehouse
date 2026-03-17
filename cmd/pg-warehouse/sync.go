@@ -28,7 +28,7 @@ var syncCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer pgSource.Close()
+		defer func() { _ = pgSource.Close() }()
 
 		svc := services.NewSyncService(pgSource, app.WH, app.State, app.Logger)
 

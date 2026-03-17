@@ -64,7 +64,7 @@ func buildApp(ctx context.Context, cfg *models.ProjectConfig, loader *fileconfig
 
 	state, err := sqlitestate.NewStore(cfg.State.Path)
 	if err != nil {
-		wh.Close()
+		_ = wh.Close()
 		return nil, fmt.Errorf("failed to open state db: %w", err)
 	}
 

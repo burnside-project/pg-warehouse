@@ -45,14 +45,14 @@ var initCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("failed to connect to postgres: %w", err)
 			}
-			defer pgSource.Close()
+			defer func() { _ = pgSource.Close() }()
 		}
 
 		svc := services.NewInitService(loader, wh, pgSource)
 		if err := svc.Init(ctx, pgSource != nil); err != nil {
 			return err
 		}
-		defer wh.Close()
+		defer func() { _ = wh.Close() }()
 
 		// Create state DB as documented (02-quickstart.md)
 		stateStore, err := sqlitestate.NewStore(cfg.State.Path)

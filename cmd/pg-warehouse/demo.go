@@ -51,7 +51,7 @@ exports results to Parquet. No PostgreSQL connection is needed.`,
 		if err := wh.Open(ctx); err != nil {
 			return fmt.Errorf("failed to open warehouse: %w", err)
 		}
-		defer wh.Close()
+		defer func() { _ = wh.Close() }()
 
 		if err := wh.Bootstrap(ctx); err != nil {
 			return fmt.Errorf("failed to bootstrap warehouse: %w", err)

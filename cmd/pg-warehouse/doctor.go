@@ -30,7 +30,7 @@ var doctorCmd = &cobra.Command{
 		logger := logging.NewLogger(cfg.Logging.Level, cfg.Logging.Format)
 
 		wh := duckdb.NewWarehouse(cfg.DuckDB.Path)
-		defer wh.Close()
+		defer func() { _ = wh.Close() }()
 
 		var pgSource *postgres.Source
 		if cfg.Postgres.URL != "" {
@@ -38,7 +38,7 @@ var doctorCmd = &cobra.Command{
 			if err != nil {
 				ui.Warn(fmt.Sprintf("postgres: could not create source: %v", err))
 			} else {
-				defer pgSource.Close()
+				defer func() { _ = pgSource.Close() }()
 			}
 		}
 
