@@ -55,7 +55,7 @@ func NewAppMinimal(ctx context.Context, cfgPath string) (*App, error) {
 }
 
 func buildApp(ctx context.Context, cfg *models.ProjectConfig, loader *fileconfig.Loader) (*App, error) {
-	logger := logging.NewLogger(cfg.Logging.Level)
+	logger := logging.NewLogger(cfg.Logging.Level, cfg.Logging.Format)
 
 	wh := duckdb.NewWarehouse(cfg.DuckDB.Path)
 	if err := wh.Open(ctx); err != nil {
@@ -82,7 +82,7 @@ func (a *App) NewPostgresSource() (*postgres.Source, error) {
 	if a.Cfg.Postgres.URL == "" {
 		return nil, fmt.Errorf("postgres.url is required")
 	}
-	return postgres.NewSource(a.Cfg.Postgres.URL)
+	return postgres.NewSource(a.Cfg.Postgres)
 }
 
 // Close releases all resources held by the App.

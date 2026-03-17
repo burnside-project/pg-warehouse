@@ -7,6 +7,7 @@ import (
 	"github.com/burnside-project/pg-warehouse/internal/adapters/duckdb"
 	"github.com/burnside-project/pg-warehouse/internal/adapters/fileconfig"
 	"github.com/burnside-project/pg-warehouse/internal/adapters/postgres"
+	"github.com/burnside-project/pg-warehouse/internal/adapters/sqlitestate"
 	"github.com/burnside-project/pg-warehouse/internal/config"
 	"github.com/burnside-project/pg-warehouse/internal/models"
 	"github.com/burnside-project/pg-warehouse/internal/services"
@@ -40,7 +41,7 @@ var initCmd = &cobra.Command{
 
 		var pgSource *postgres.Source
 		if cfg.Postgres.URL != "" {
-			pgSource, err = postgres.NewSource(cfg.Postgres.URL)
+			pgSource, err = postgres.NewSource(cfg.Postgres)
 			if err != nil {
 				return fmt.Errorf("failed to connect to postgres: %w", err)
 			}
@@ -53,8 +54,16 @@ var initCmd = &cobra.Command{
 		}
 		defer wh.Close()
 
+		// Create state DB as documented (02-quickstart.md)
+		stateStore, err := sqlitestate.NewStore(cfg.State.Path)
+		if err != nil {
+			return fmt.Errorf("failed to create state db: %w", err)
+		}
+		defer stateStore.Close()
+
 		fmt.Println("pg-warehouse initialized successfully")
 		fmt.Printf("  warehouse: %s\n", cfg.DuckDB.Path)
+		fmt.Printf("  state:     %s\n", cfg.State.Path)
 		return nil
 	},
 }

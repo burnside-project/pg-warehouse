@@ -181,15 +181,8 @@ func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs 
 		startLSN = "0/0"
 	}
 
-	// Phase 3: Stream changes
+	// Phase 3: Stream changes with reconnection
 	s.logger.Info("starting CDC stream from LSN %s", startLSN)
-
-	events := make(chan ports.CDCEvent, 1000)
-	errCh := make(chan error, 1)
-
-	go func() {
-		errCh <- s.cdcSource.Stream(ctx, cfg.SlotName, cfg.PublicationName, startLSN, events)
-	}()
 
 	for _, table := range cfg.Tables {
 		cs := &models.CDCState{
@@ -201,6 +194,78 @@ func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs 
 		}
 		_ = s.state.UpsertCDCState(ctx, cs)
 	}
+
+	currentLSN := startLSN
+	const maxRetries = 10
+	backoff := 1 * time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if attempt > 0 {
+			s.logger.Info("reconnecting CDC stream (attempt %d/%d) from LSN %s in %s",
+				attempt, maxRetries, currentLSN, backoff)
+			_ = s.state.AddAuditEntry(ctx, models.AuditInfo, "cdc.reconnect",
+				fmt.Sprintf("reconnecting attempt %d from LSN %s", attempt, currentLSN), nil)
+
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+
+			// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s max
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
+
+		lastLSN, err := s.streamOnce(ctx, cfg, currentLSN, tableConfigMap)
+		if lastLSN != "" {
+			currentLSN = lastLSN
+		}
+
+		if err == nil || ctx.Err() != nil {
+			// Graceful shutdown or clean exit — persist final state
+			if currentLSN != "" {
+				bgCtx := context.Background()
+				_ = s.cdcSource.ConfirmLSN(bgCtx, currentLSN)
+				_ = s.state.SetWatermark(bgCtx, "cdc_confirmed_lsn", currentLSN)
+			}
+			_ = s.state.AddAuditEntry(context.Background(), models.AuditInfo, models.EventCDCStop,
+				"CDC streaming stopped", nil)
+			return err
+		}
+
+		// Recoverable error — log and retry
+		s.logger.Error("CDC stream error: %v", err)
+		_ = s.state.AddAuditEntry(ctx, models.AuditError, models.EventCDCError,
+			fmt.Sprintf("CDC stream error (will retry): %v", err), nil)
+
+		// Reset backoff on successful progress
+		if lastLSN != "" {
+			backoff = 1 * time.Second
+			attempt = 0 // reset retry counter on progress
+		}
+	}
+
+	_ = s.state.AddAuditEntry(context.Background(), models.AuditError, models.EventCDCStop,
+		fmt.Sprintf("CDC stopped after %d retries", maxRetries), nil)
+	return fmt.Errorf("CDC stream failed after %d reconnection attempts", maxRetries)
+}
+
+// streamOnce runs a single streaming session. Returns the last processed LSN and any error.
+// On recoverable errors (EOF, connection reset), the caller can retry from the returned LSN.
+func (s *CDCService) streamOnce(ctx context.Context, cfg models.CDCCfg, startLSN string, tableConfigMap map[string]models.TableConfig) (string, error) {
+	events := make(chan ports.CDCEvent, 1000)
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- s.cdcSource.Stream(ctx, cfg.SlotName, cfg.PublicationName, startLSN, events)
+	}()
 
 	var batch []ports.CDCEvent
 	flushTicker := time.NewTicker(1 * time.Second)
@@ -218,7 +283,7 @@ func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs 
 				if len(batch) > 0 {
 					s.flushBatch(ctx, batch, tableConfigMap)
 				}
-				return <-errCh
+				return lastLSN, <-errCh
 			}
 			batch = append(batch, event)
 			lastLSN = event.LSN
@@ -247,13 +312,7 @@ func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs 
 			if len(batch) > 0 {
 				s.flushBatch(ctx, batch, tableConfigMap)
 			}
-			if err != nil && ctx.Err() == nil {
-				_ = s.state.AddAuditEntry(ctx, models.AuditError, models.EventCDCError,
-					fmt.Sprintf("CDC stream error: %v", err), nil)
-			}
-			_ = s.state.AddAuditEntry(ctx, models.AuditInfo, models.EventCDCStop,
-				"CDC streaming stopped", nil)
-			return err
+			return lastLSN, err
 		}
 	}
 }
@@ -276,18 +335,18 @@ func (s *CDCService) flushBatch(ctx context.Context, batch []ports.CDCEvent, tab
 		case "UPDATE":
 			tc, ok := tableConfigs[event.Table]
 			if ok && len(tc.PrimaryKey) > 0 && event.NewTuple != nil {
-				deleteSQL := buildDeleteSQL(rawTable, tc.PrimaryKey, event.NewTuple)
+				deleteSQL, deleteArgs := buildParameterizedDelete(rawTable, tc.PrimaryKey, event.NewTuple)
 				if deleteSQL != "" {
-					_ = s.warehouse.ExecuteSQL(ctx, deleteSQL)
+					_ = s.warehouse.ExecuteSQLWithArgs(ctx, deleteSQL, deleteArgs...)
 				}
 				err = s.warehouse.InsertRows(ctx, rawTable, []map[string]any{event.NewTuple})
 			}
 		case "DELETE":
 			tc, ok := tableConfigs[event.Table]
 			if ok && len(tc.PrimaryKey) > 0 && event.OldTuple != nil {
-				deleteSQL := buildDeleteSQL(rawTable, tc.PrimaryKey, event.OldTuple)
+				deleteSQL, deleteArgs := buildParameterizedDelete(rawTable, tc.PrimaryKey, event.OldTuple)
 				if deleteSQL != "" {
-					err = s.warehouse.ExecuteSQL(ctx, deleteSQL)
+					err = s.warehouse.ExecuteSQLWithArgs(ctx, deleteSQL, deleteArgs...)
 				}
 			}
 		}
@@ -298,15 +357,18 @@ func (s *CDCService) flushBatch(ctx context.Context, batch []ports.CDCEvent, tab
 	}
 }
 
-func buildDeleteSQL(table string, primaryKeys []string, tuple map[string]any) string {
+// buildParameterizedDelete builds a parameterized DELETE statement to prevent SQL injection.
+func buildParameterizedDelete(table string, primaryKeys []string, tuple map[string]any) (string, []any) {
 	var conditions []string
+	var args []any
 	for _, pk := range primaryKeys {
 		if val, exists := tuple[pk]; exists {
-			conditions = append(conditions, fmt.Sprintf("%s = '%v'", pk, val))
+			args = append(args, val)
+			conditions = append(conditions, fmt.Sprintf("%s = $%d", pk, len(args)))
 		}
 	}
 	if len(conditions) == 0 {
-		return ""
+		return "", nil
 	}
-	return fmt.Sprintf("DELETE FROM %s WHERE %s", table, strings.Join(conditions, " AND "))
+	return fmt.Sprintf("DELETE FROM %s WHERE %s", table, strings.Join(conditions, " AND ")), args
 }

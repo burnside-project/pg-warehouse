@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/burnside-project/pg-warehouse/internal/services"
+	"github.com/burnside-project/pg-warehouse/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +34,16 @@ var exportCmd = &cobra.Command{
 		}
 
 		svc := services.NewExportService(app.WH, app.Logger)
-		return svc.Export(ctx, exportTable, exportOutput, fileType)
+		rowCount, err := svc.Export(ctx, exportTable, exportOutput, fileType)
+		if err != nil {
+			return err
+		}
+
+		fi, _ := os.Stat(exportOutput)
+		if fi != nil {
+			ui.Success(fmt.Sprintf("Exported %d rows to %s (%s)", rowCount, exportOutput, humanizeBytes(fi.Size())))
+		}
+		return nil
 	},
 }
 

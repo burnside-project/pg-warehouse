@@ -26,29 +26,30 @@ func NewExportService(wh ports.WarehouseStore, logger *logging.Logger) *ExportSe
 }
 
 // Export exports a warehouse table to the specified file.
-func (s *ExportService) Export(ctx context.Context, table string, outputPath string, fileType string) error {
+// Returns the row count on success.
+func (s *ExportService) Export(ctx context.Context, table string, outputPath string, fileType string) (int64, error) {
 	if err := feature.ValidateOutputType(fileType); err != nil {
-		return err
+		return 0, err
 	}
 
 	exists, err := s.warehouse.TableExists(ctx, table)
 	if err != nil {
-		return fmt.Errorf("failed to check table existence: %w", err)
+		return 0, fmt.Errorf("failed to check table existence: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("table %s does not exist", table)
+		return 0, fmt.Errorf("table %s does not exist", table)
 	}
 
 	if err := util.EnsureDir(filepath.Dir(outputPath)); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
+		return 0, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
 	s.logger.Info("exporting %s to %s (%s)", table, outputPath, fileType)
 	if err := s.warehouse.ExportTable(ctx, table, outputPath, fileType); err != nil {
-		return fmt.Errorf("export failed: %w", err)
+		return 0, fmt.Errorf("export failed: %w", err)
 	}
 
 	rowCount, _ := s.warehouse.CountRows(ctx, table)
 	s.logger.Info("exported %d rows to %s", rowCount, outputPath)
-	return nil
+	return rowCount, nil
 }

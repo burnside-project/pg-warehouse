@@ -1,7 +1,7 @@
-# Build stage
-FROM golang:1.26-alpine AS builder
+# Build stage — using Debian for glibc compatibility with go-duckdb
+FROM golang:1.25-bookworm AS builder
 
-RUN apk add --no-cache git gcc musl-dev
+RUN apt-get update && apt-get install -y --no-install-recommends git gcc g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -11,9 +11,9 @@ COPY . .
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X github.com/burnside-project/pg-warehouse/pkg/version.Version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o /pg-warehouse ./cmd/pg-warehouse/
 
 # Runtime stage
-FROM alpine:3.23
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /pg-warehouse /usr/local/bin/pg-warehouse
 
 ENTRYPOINT ["pg-warehouse"]

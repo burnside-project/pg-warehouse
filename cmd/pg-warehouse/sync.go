@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/burnside-project/pg-warehouse/internal/services"
 	"github.com/burnside-project/pg-warehouse/internal/ui"
 	"github.com/spf13/cobra"
 )
+
+var syncMode string
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
@@ -29,10 +32,20 @@ var syncCmd = &cobra.Command{
 
 		svc := services.NewSyncService(pgSource, app.WH, app.State, app.Logger)
 
+		// Apply mode override: CLI flag takes precedence over config
+		mode := syncMode
+		if mode == "" {
+			mode = app.Cfg.Sync.Mode
+		}
+		if mode != "" {
+			svc.SetModeOverride(mode)
+		}
+
 		totalTables := len(app.Cfg.Sync.Tables)
 		progress := ui.NewProgress()
 		progress.Start("syncing tables", totalTables)
 
+		syncStart := time.Now()
 		results, err := svc.SyncAll(ctx, app.Cfg.Sync.Tables, app.Cfg.Sync.DefaultBatchSize)
 		if err != nil {
 			return err
@@ -51,10 +64,12 @@ var syncCmd = &cobra.Command{
 				ui.Success(fmt.Sprintf("%s: mode=%s rows=%d duration=%s", r.TableName, r.Mode, r.InsertedRows, r.Duration))
 			}
 		}
+		fmt.Printf("Sync complete in %s\n", time.Since(syncStart).Round(100*time.Millisecond))
 		return nil
 	},
 }
 
 func init() {
+	syncCmd.Flags().StringVar(&syncMode, "mode", "", "sync mode override (full, incremental)")
 	rootCmd.AddCommand(syncCmd)
 }

@@ -167,12 +167,19 @@ func (c *CDCAdapter) StartSnapshot(ctx context.Context, table string) ([]map[str
 }
 
 // Stream starts logical replication from the given LSN.
+// The events channel is closed when Stream returns.
 func (c *CDCAdapter) Stream(ctx context.Context, slotName string, publicationName string, startLSN string, events chan<- ports.CDCEvent) error {
+	defer close(events)
+
 	replConn, err := c.connectReplication(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to connect for streaming: %w", err)
 	}
 	c.replConn = replConn
+	defer func() {
+		c.replConn = nil
+		replConn.Close(context.Background())
+	}()
 
 	lsn, err := pglogrepl.ParseLSN(startLSN)
 	if err != nil {
@@ -191,27 +198,35 @@ func (c *CDCAdapter) Stream(ctx context.Context, slotName string, publicationNam
 		return fmt.Errorf("failed to start replication: %w", err)
 	}
 
+	// Send immediate standby status to prevent wal_sender_timeout on idle streams.
+	// PostgreSQL default wal_sender_timeout is 60s; without this, a stream with no
+	// initial events would be killed before the first periodic status update.
+	_ = pglogrepl.SendStandbyStatusUpdate(ctx, replConn,
+		pglogrepl.StandbyStatusUpdate{WALWritePosition: lsn})
+
 	standbyDeadline := time.Now().Add(10 * time.Second)
-	var lastConfirmedLSN pglogrepl.LSN
+	// Track the highest WAL position seen from the server (keepalives + xlog data).
+	// Confirming this position tells PostgreSQL it can release WAL up to this point,
+	// preventing unbounded WAL accumulation when subscribed tables are idle but other
+	// tables in the database are actively written to. This is essential for any
+	// customer workload regardless of which tables are in the publication.
+	serverWALEnd := lsn
 
 	for {
 		if ctx.Err() != nil {
-			// Confirm final LSN before exit
-			if lastConfirmedLSN > 0 {
-				_ = pglogrepl.SendStandbyStatusUpdate(ctx, replConn,
-					pglogrepl.StandbyStatusUpdate{WALWritePosition: lastConfirmedLSN})
-			}
+			// Confirm final position before exit
+			_ = pglogrepl.SendStandbyStatusUpdate(ctx, replConn,
+				pglogrepl.StandbyStatusUpdate{WALWritePosition: serverWALEnd})
 			return ctx.Err()
 		}
 
-		// Send standby status periodically
+		// Send standby status periodically — confirms the latest server WAL position
+		// to release WAL and prevent wal_sender_timeout
 		if time.Now().After(standbyDeadline) {
-			if lastConfirmedLSN > 0 {
-				err = pglogrepl.SendStandbyStatusUpdate(ctx, replConn,
-					pglogrepl.StandbyStatusUpdate{WALWritePosition: lastConfirmedLSN})
-				if err != nil {
-					return fmt.Errorf("failed to send standby status: %w", err)
-				}
+			err = pglogrepl.SendStandbyStatusUpdate(ctx, replConn,
+				pglogrepl.StandbyStatusUpdate{WALWritePosition: serverWALEnd})
+			if err != nil {
+				return fmt.Errorf("failed to send standby status: %w", err)
 			}
 			standbyDeadline = time.Now().Add(10 * time.Second)
 		}
@@ -242,6 +257,11 @@ func (c *CDCAdapter) Stream(ctx context.Context, slotName string, publicationNam
 			if err != nil {
 				return fmt.Errorf("failed to parse keepalive: %w", err)
 			}
+			// Advance confirmed position to the server's WAL end.
+			// This releases WAL from unrelated tables, preventing lag buildup.
+			if pkm.ServerWALEnd > serverWALEnd {
+				serverWALEnd = pkm.ServerWALEnd
+			}
 			if pkm.ReplyRequested {
 				standbyDeadline = time.Time{} // force immediate reply
 			}
@@ -252,7 +272,10 @@ func (c *CDCAdapter) Stream(ctx context.Context, slotName string, publicationNam
 				return fmt.Errorf("failed to parse xlog data: %w", err)
 			}
 
-			lastConfirmedLSN = xld.WALStart + pglogrepl.LSN(len(xld.WALData))
+			walEnd := xld.WALStart + pglogrepl.LSN(len(xld.WALData))
+			if walEnd > serverWALEnd {
+				serverWALEnd = walEnd
+			}
 
 			logicalMsg, err := pglogrepl.ParseV2(xld.WALData, false)
 			if err != nil {
