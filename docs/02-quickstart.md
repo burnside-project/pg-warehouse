@@ -1,12 +1,10 @@
 # Quickstart
 
-
 ## System Requirements
 
 - Go 1.25+
 - PostgreSQL 10+ with `wal_level=logical` (for CDC)
 - PostgreSQL user with `REPLICATION` privilege and table ownership
-
 
 | Requirement | Minimum | Recommended |
 |-------------|---------|-------------|
@@ -67,78 +65,25 @@ SHOW hba_file;
 
 > Will show location of the file like ... "/etc/postgresql/18/main/pg_hba.conf"
 
-
-
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| Go | 1.25+ | 1.25+ |
-| PostgreSQL | 10+ | 16+ |
-| DuckDB | Embedded (no install) | — |
-| Disk space | 2x source data size | 3x source data size |
-| Memory | 512 MB | 2 GB+ for large snapshots |
-
----
-
-## Before you Start - Prerequisites
-
-### 1. Check PostgreSQL Configurations
-
-```sql
--- Must be PostgreSQL 10 or higher
-SELECT version();
-
--- Check WAL level (must be 'logical' for CDC)
-SHOW wal_level;
-
--- Check replication slots and senders (need at least 1 each for pg-warehouse)
-SHOW max_replication_slots;   -- recommended: 4
-SHOW max_wal_senders;         -- recommended: 4
-```
-
-If `wal_level` is not `logical`, update `postgresql.conf` and **restart PostgreSQL**:
-
-```ini
-wal_level = logical
-max_replication_slots = 4
-max_wal_senders = 4
-```
-
-### 2. PostgreSQL User Setup
-
-The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
-
-```sql
--- Create a dedicated warehouse user
-CREATE USER warehouse WITH PASSWORD 'your_password' REPLICATION;
-
--- Grant access to the source database
-GRANT CONNECT ON DATABASE mydb TO warehouse;
-GRANT USAGE ON SCHEMA public TO warehouse;
-
--- Grant table ownership (required for CDC publication creation)
-ALTER TABLE public.orders OWNER TO warehouse;
-ALTER TABLE public.customers OWNER TO warehouse;
--- Repeat for all tables you want to replicate
-```
 ```bash
 ## Edit pg_hba.conf
-# add following values at the bottom of the file 
+# add following values at the bottom of the file
 vi pg_hba.conf
 ```
 
 ```ini
 # TYPE  DATABASE        USER            ADDRESS          METHOD
 host    replication    warehouse    xx.xx.xx.0/24    scram-sha-256
-# database user you created above | subnet where you are running pg-warehouse from 
+# database user you created above | subnet where you are running pg-warehouse from
 ```
 
-```sql 
--- validte if your replication user warehouse has proper credentials
+```sql
+-- validate if your replication user warehouse has proper credentials
 SELECT rolname, rolcanlogin, rolreplication
 FROM pg_roles
 WHERE rolname IN ('warehouse')
 
--- you will see something like this 
+-- you will see something like this
 -- rolcanlogin = true
 -- rolreplication = true
 ```
@@ -149,13 +94,14 @@ WHERE rolname IN ('warehouse')
 psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 ```
 
-### 3. Get Postgresql LSN Number so we can pre-seed DuckDB (Fast Initial Load)
+### 3. Setup CDC and Get PostgreSQL LSN Number for Pre-Seeding DuckDB
 
-> This is IMPORTANT becuase it creates a fast provision process!
+> This is IMPORTANT because it creates a fast provision process!
 
 The default CDC snapshot can take hours because it loads each table row-by-row from the database. A faster approach uses the same pattern as production database replication process: **capture a WAL position, bulk copy the data, then start replication from that position**.
 
 This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
+
 #### Performance Comparison
 
 | Method | 50M rows / 9.6 GB | Production Safe |
@@ -164,21 +110,23 @@ This reduces initial seeding from hours to minutes (50 million rows in ~5-10 min
 | `COPY TO CSV` + `--from-lsn` | **~5-10 minutes** | **Yes** |
 
 > See [Pre-Seeding Details](#pre-seeding-details) in the Reference section for consistency notes and alternative methods.
-> Setup CDC and Capture LSN
 
 ```bash
+# Step A: Create the publication and replication slot FIRST
+# This ensures PostgreSQL retains all WAL from this point forward
+pg-warehouse cdc setup --config pg-warehouse.yml
 
-# Capture the current WAL position — write this down
+# Step B: Capture the current WAL position — write this down
 psql postgres://warehouse:password@pg-host:5432/mydb -tA \
   -c "SELECT pg_current_wal_lsn();"
 # Example Output: 72/F1E38898
 ```
 
-> Important: Write Down the WAL position as you will need this later in step
+> **Important:** Write down the WAL position — you will need this in Step 3 below. The replication slot created in Step A guarantees no changes are lost between now and when CDC starts.
 
---- 
+---
 
-### 4. Create `pg-warehouse.yml` in your working directory. 
+### 4. Create `pg-warehouse.yml` in your working directory.
 
 See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
 
@@ -195,6 +143,14 @@ postgres:
 duckdb:
   path: ./warehouse.duckdb
 
+cdc:
+  enabled: true
+  publication_name: pgwh_pub
+  slot_name: pgwh_slot
+  tables:
+    - public.orders
+    - public.customers
+
 sync:
   mode: incremental
   tables:
@@ -207,17 +163,20 @@ sync:
       primary_key: [id]
       watermark_column: updated_at
 ```
---- 
+
+---
 
 ## Start pg-warehouse - The local-first Data Warehouse
 
-###  Step 1.  Initialize DuckDB
+### Step 1. Initialize DuckDB
 
 ```bash
 pg-warehouse init --config pg-warehouse.yml
 ```
 
-### Step 2 Export Data from PostgreSQL and Load into DuckDB
+Creates `warehouse.duckdb` (with `raw`, `stage`, `silver`, `feat` schemas) and `.pgwh/state.db` (SQLite state).
+
+### Step 2. Export Data from PostgreSQL and Load into DuckDB
 
 Use PostgreSQL's `COPY TO` command to export tables as CSV, then load them into DuckDB with `read_csv`. This is production-safe — wrapping the exports in a `REPEATABLE READ` transaction guarantees all tables are exported at the exact same point in time (consistent snapshot).
 
@@ -238,7 +197,7 @@ COMMIT;
 SQL
 ```
 
-Load into DuckDB:
+#### Load into DuckDB
 
 ```bash
 duckdb warehouse.duckdb <<'SQL'
@@ -249,17 +208,57 @@ CREATE OR REPLACE TABLE raw.customers AS
 SQL
 ```
 
-### Step 3 Start CDC from Captured LSN (Reference Above)
+### Step 3. Start CDC from Captured LSN
+
+Use the LSN you captured in Prerequisites Step 3:
 
 ```bash
 pg-warehouse cdc start --from-lsn "72/F1E38898"
 ```
 
-> New to these requirements? See [Before you Start - Prerequisites](#before-you-start---prerequisites) above.
+> **`--from-lsn` is for first-time setup only.** It skips the initial snapshot and sets all tables to the provided LSN. On subsequent restarts (after crashes, upgrades, or reboots), do NOT use `--from-lsn` — just run `pg-warehouse cdc start` and it will resume from the last confirmed LSN in the state database. See [Upgrading pg-warehouse](#upgrading-pg-warehouse) below.
 
 ---
 
-## Frequently Asked Question 
+## Upgrading pg-warehouse
+
+When deploying a new version of pg-warehouse, follow this procedure. CDC state is preserved in SQLite — no teardown, no re-seeding, no data loss.
+
+> **Do NOT use `--from-lsn` on upgrades.** It resets the LSN backward and causes unnecessary WAL replay. The state database already has the correct LSN.
+
+```bash
+# 1. Stop CDC gracefully (saves final state to SQLite)
+kill -SIGINT $(pgrep -f 'pg-warehouse cdc') && sleep 5
+
+# 2. Replace binary
+cp /path/to/new/pg-warehouse ./pg-warehouse
+
+# 3. Run init (idempotent — creates any new schemas without touching existing data)
+./pg-warehouse init --config pg-warehouse.yml
+
+# 4. Clear stale lock (the old PID is gone)
+sqlite3 .pgwh/state.db 'DELETE FROM lock_state;'
+
+# 5. Restart CDC — reads confirmed_lsn from state, resumes where it left off
+nohup ./pg-warehouse cdc start --config pg-warehouse.yml > cdc.log 2>&1 &
+
+# 6. Validate
+pg-warehouse doctor --config pg-warehouse.yml
+tail -5 cdc.log
+```
+
+### When to use `--from-lsn`
+
+| Scenario | Use `--from-lsn`? |
+|---|:---:|
+| First-time setup (pre-seeded DuckDB with bulk copy) | **Yes** (once) |
+| Binary upgrade / redeploy | **No** |
+| Crash recovery / restart | **No** |
+| Full reset (teardown + setup + re-seed) | **Yes** |
+
+---
+
+## Frequently Asked Question
 
 ### How to Build a pg-warehouse binary ?
 
@@ -303,7 +302,7 @@ sync:
 pg-warehouse init --duckdb ./warehouse.duckdb
 ```
 
-Creates `warehouse.duckdb` (with `raw`, `stage`, `feat` schemas) and `.pgwh/state.db` (SQLite state).
+Creates `warehouse.duckdb` (with `raw`, `stage`, `silver`, `feat` schemas) and `.pgwh/state.db` (SQLite state).
 
 ### How to Validate pg-warehouse ?
 
@@ -343,17 +342,23 @@ pg-warehouse inspect schema raw.orders   # Describe a table
 pg-warehouse inspect sync-state          # Show sync state
 ```
 
-### How to Run Feature SQL pg-warehouse ?
+### How to Run Feature SQL in pg-warehouse ?
 
 ```bash
+# Silver layer: curated intermediate transforms
 pg-warehouse run \
-  --sql-file ./sql/customer_features.sql \
+  --sql-file ./sql/silver/order_enriched.sql \
+  --target-table silver.order_enriched
+
+# Gold layer: analytics-ready features with export
+pg-warehouse run \
+  --sql-file ./sql/feat/customer_features.sql \
   --target-table feat.customer_features \
   --output ./out/customer_features.parquet \
   --file-type parquet
 ```
 
-### How to review and Export pg-warehouse ?
+### How to Preview and Export from pg-warehouse ?
 
 ```bash
 # Preview query results
@@ -395,10 +400,11 @@ postgres:
 # ──────────────────────────────────────────────────────────────────────
 # DuckDB Warehouse
 # ──────────────────────────────────────────────────────────────────────
-# Single embedded database file containing three schemas:
-#   raw.*   — mirrored source tables (written by sync and CDC)
-#   stage.* — temporary staging area for incremental merge (auto-managed)
-#   feat.*  — SQL feature pipeline outputs (written by 'run' command)
+# Single embedded database file containing four schemas (Medallion Architecture):
+#   raw.*    — Bronze: mirrored source tables (written by sync and CDC)
+#   stage.*  — Internal: temporary merge buffer for incremental sync (auto-managed)
+#   silver.* — Silver: user curated/transformed intermediate tables
+#   feat.*   — Gold: analytics-ready feature pipeline outputs (written by 'run' command)
 duckdb:
   path: ./warehouse.duckdb            # Path to DuckDB file (created on init)
 
@@ -457,7 +463,7 @@ logging:
 |---------|---------|----------|
 | `project` | Names the warehouse instance; stored in state DB for identification | Yes |
 | `postgres` | PostgreSQL connection settings and pool tuning | Yes |
-| `duckdb` | Path to the DuckDB warehouse file (single file, three schemas) | Yes |
+| `duckdb` | Path to the DuckDB warehouse file (single file, four schemas) | Yes |
 | `state` | Path to the SQLite state DB that tracks sync/CDC progress | No (defaults to `.pgwh/state.db`) |
 | `cdc` | CDC configuration: publication name, slot, and table list | No (disabled by default) |
 | `sync` | Batch sync mode, batch size, and per-table mapping | Yes (if using sync) |
@@ -502,13 +508,26 @@ SQL
 
 ## pg-warehouse DuckDB Warehouse Architecture
 
-> **pg-warehouse** is a **single DuckDB database file** containing three schemas and follows **Medallion Architecture for lakehouses**
+> **pg-warehouse** uses a **single DuckDB database file** with four schemas following **Medallion Architecture for lakehouses**
 
-| Schema | Purpose | Written By |
-|--------|---------|------------|
-| `raw.*` | Mirrored source tables — exact copies of PostgreSQL data | `sync`, `cdc start` |
-| `stage.*` | Temporary staging for incremental merge — auto-created and dropped per sync cycle | `sync` (incremental mode) |
-| `feat.*` | SQL feature pipeline outputs — results of user-defined SQL transformations | `run` |
+| Schema | Layer | Purpose | Written By |
+|--------|-------|---------|------------|
+| `raw.*` | Bronze | Mirrored source tables — exact copies of PostgreSQL data | `sync`, `cdc start` |
+| `stage.*` | Internal | Temporary merge buffer for incremental sync — auto-created and dropped per sync cycle (not user-facing) | `sync` (incremental mode) |
+| `silver.*` | Silver | User curated/transformed intermediate tables — cleaned, joined, enriched data | `run --target-table silver.*` |
+| `feat.*` | Gold | Analytics-ready feature pipeline outputs — aggregated, dashboard-ready tables | `run --target-table feat.*` |
+
+```
+PostgreSQL (source)
+   ↓ CDC / sync
+DuckDB (local warehouse)
+   ├── raw.*    — Bronze: mirrored source tables
+   ├── stage.*  — Internal: merge buffer (ephemeral, not user-facing)
+   ├── silver.* — Silver: curated transforms (user SQL pipelines)
+   └── feat.*   — Gold: analytics-ready outputs (user SQL pipelines)
+   ↓
+Parquet / CSV exports
+```
 
 ## State Database (SQLite)
 
