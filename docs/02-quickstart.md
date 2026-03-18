@@ -59,12 +59,14 @@ ALTER TABLE public.orders OWNER TO warehouse;
 ALTER TABLE public.customers OWNER TO warehouse;
 -- Repeat for all tables you want to replicate
 ```
+
 ```sql
 -- We need to enable the replication user
 SHOW hba_file;
-
--- Will show localtion of the file like ... "/etc/postgresql/18/main/pg_hba.conf"
 ```
+
+> Will show location of the file like ... "/etc/postgresql/18/main/pg_hba.conf"
+
 
 ```bash
 ## Edit pg_hba.conf
