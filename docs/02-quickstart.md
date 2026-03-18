@@ -59,6 +59,30 @@ ALTER TABLE public.orders OWNER TO warehouse;
 ALTER TABLE public.customers OWNER TO warehouse;
 -- Repeat for all tables you want to replicate
 ```
+```bash
+# We need to enable the replication user
+SHOW hba_file;
+
+# Will show localtion of the file like ... "/etc/postgresql/18/main/pg_hba.conf"
+
+vi pg_hba.conf
+ 
+# add following values at the bottom of the file 
+# TYPE  DATABASE        USER            ADDRESS          METHOD
+host    replication    warehouse    xx.xx.xx.0/24    scram-sha-256
+# database user you created above | subnet where you are running pg-warehouse from 
+```
+
+```sql 
+-- validte if your replication user warehouse has proper credentials
+SELECT rolname, rolcanlogin, rolreplication
+FROM pg_roles
+WHERE rolname IN ('warehouse')
+
+-- you will see something like this 
+-- rolcanlogin = true
+-- rolreplication = true
+```
 
 > Validate Connectivity
 
@@ -102,54 +126,16 @@ See the [Configuration File Reference](#configuration-file-reference) for all av
 Minimal example:
 
 ```yaml
-# ──────────────────────────────────────────────────────────────────────
-# Project
-# ──────────────────────────────────────────────────────────────────────
 project:
-  name: soak_test_warehouse           # Project identifier, stored in state DB
+  name: my_warehouse
 
-# ──────────────────────────────────────────────────────────────────────
-# PostgreSQL Source
-# ──────────────────────────────────────────────────────────────────────
 postgres:
   url: postgres://warehouse:password@pg-host:5432/mydb
   schema: public
 
-# ──────────────────────────────────────────────────────────────────────
-# DuckDB Warehouse
-# ──────────────────────────────────────────────────────────────────────
-# Single embedded database file containing three schemas:
-#   raw.*   — mirrored source tables (written by sync and CDC)
-#   stage.* — temporary staging area for incremental merge (auto-managed)
-#   feat.*  — SQL feature pipeline outputs (written by 'run' command)
 duckdb:
-  path: ./warehouse.duckdb            # Path to DuckDB file (created on init)
+  path: ./warehouse.duckdb
 
-# ──────────────────────────────────────────────────────────────────────
-# State Database
-# ──────────────────────────────────────────────────────────────────────
-# SQLite database that tracks sync progress, CDC state, and audit history.
-# Decoupled from DuckDB so state survives warehouse rebuilds.
-state:
-  path: .pgwh/state.db                # Path to SQLite state file (default: .pgwh/state.db)
-
-# ──────────────────────────────────────────────────────────────────────
-# CDC (Change Data Capture)
-# ──────────────────────────────────────────────────────────────────────
-# Streams real-time changes from PostgreSQL using logical replication.
-# Requires wal_level=logical and REPLICATION privilege on the user.
-cdc:
-  enabled: true                        # Enable CDC streaming (default: false)
-  publication_name: pgwh_pub           # PostgreSQL publication name (default: pgwh_pub)
-  slot_name: pgwh_slot                 # Replication slot name (default: pgwh_slot)
-  tables:                              # Tables to include in the publication
-    - public.products
-
-# ──────────────────────────────────────────────────────────────────────
-# Sync
-# ──────────────────────────────────────────────────────────────────────
-# Batch sync from PostgreSQL to DuckDB. First run does a full snapshot;
-# subsequent runs use watermark-based incremental sync.
 sync:
   mode: incremental
   tables:
