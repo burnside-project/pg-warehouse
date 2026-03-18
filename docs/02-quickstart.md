@@ -1,5 +1,79 @@
 # Quickstart
 
+## Application Defaults
+
+pg-warehouse ships with the following immutable and configurable defaults. These are compiled into the binary and applied automatically when a config value is not explicitly set.
+
+### DuckDB Warehouse
+
+| Default | Value | Source |
+|---------|-------|--------|
+| Database file | `warehouse.duckdb` | `cmd/pg-warehouse/init.go` (CLI flag default) |
+| Database type | Single embedded file, three schemas | `internal/adapters/duckdb/bootstrap.go` |
+
+The warehouse is a **single DuckDB database** containing three schemas, created at init:
+
+| Schema | Purpose | Written By |
+|--------|---------|------------|
+| `raw.*` | Mirrored source tables — exact copies of PostgreSQL data | `sync`, `cdc start` |
+| `stage.*` | Temporary staging for incremental merge — auto-created and dropped per sync cycle | `sync` (incremental mode) |
+| `feat.*` | SQL feature pipeline outputs — results of user-defined SQL transformations | `run` |
+
+### State Database (SQLite)
+
+| Default | Value | Source |
+|---------|-------|--------|
+| State DB path | `.pgwh/state.db` | `internal/config/config.go` |
+| Schema version | `1` | `internal/adapters/sqlitestate/schema.go` |
+
+State is stored in SQLite, **not DuckDB**, so it survives warehouse rebuilds. It tracks:
+
+| Table | Purpose |
+|-------|---------|
+| `project_identity` | Project metadata (singleton) |
+| `sync_state` | Per-table sync watermarks and LSN |
+| `sync_history` | Bounded sync run history |
+| `cdc_state` | Per-table CDC replication state |
+| `feature_runs` | Bounded feature execution history |
+| `audit_log` | Platform audit trail |
+| `watermarks` | Named progress checkpoints (e.g., `cdc_confirmed_lsn`) |
+| `lock_state` | Concurrent execution prevention |
+| `schema_version` | Migration tracking |
+
+### Configuration Defaults
+
+These values are applied when the corresponding config field is omitted. Defined in `internal/config/config.go`.
+
+| Setting | Default Value | Notes |
+|---------|---------------|-------|
+| Config file name | `pg-warehouse.yml` | Expected in working directory |
+| `postgres.schema` | `public` | Source schema to read from |
+| `postgres.max_conns` | `2` | Connection pool size (capped at 5) |
+| `postgres.connect_timeout` | `5s` | |
+| `postgres.query_timeout` | `30s` | |
+| `state.path` | `.pgwh/state.db` | |
+| `cdc.publication_name` | `pgwh_pub` | PostgreSQL publication name |
+| `cdc.slot_name` | `pgwh_slot` | PostgreSQL replication slot name |
+| `sync.default_batch_size` | `50000` | Rows per sync batch |
+| `sync.tables[].target_schema` | `raw` | DuckDB target schema per table |
+| `run.default_output_dir` | `./out` | Export output directory |
+| `run.default_file_type` | `parquet` | `parquet` or `csv` |
+| `logging.level` | `info` | `debug`, `info`, `warn`, `error` |
+| `logging.format` | `text` | `text` or `json` |
+
+### Internal Constants
+
+These are hardcoded in the application and not configurable via YAML.
+
+| Constant | Value | Source | Purpose |
+|----------|-------|--------|---------|
+| DuckDB insert batch size | `1000` rows | `internal/adapters/duckdb/warehouse.go` | Rows per INSERT statement |
+| CDC lock TTL | `24 hours` | `internal/services/cdc_service.go` | Lock expiry for crash recovery |
+| CDC max reconnect retries | `10` | `internal/services/cdc_service.go` | Auto-reconnect attempts before giving up |
+| CDC batch flush | `100 events` or `1 second` | `internal/adapters/postgres/cdc.go` | Batched apply to DuckDB |
+| CDC LSN confirmation | Every `10 seconds` | `internal/adapters/postgres/cdc.go` | Progress confirmation to PostgreSQL |
+| Max PostgreSQL connections | `5` (hard cap) | `internal/config/config.go` | `max_conns` is capped regardless of config |
+
 ## Before You Begin
 
 Complete these steps before installing or running pg-warehouse.
