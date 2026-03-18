@@ -6,9 +6,116 @@
 - PostgreSQL 10+ with `wal_level=logical` (for CDC)
 - PostgreSQL user with `REPLICATION` privilege and table ownership
 
+
+### System Requirements
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| Go | 1.25+ | 1.25+ |
+| PostgreSQL | 10+ | 16+ |
+| DuckDB | Embedded (no install) | — |
+| Disk space | 2x source data size | 3x source data size |
+| Memory | 512 MB | 2 GB+ for large snapshots |
+
+## Prerequisites Details
+
+### PostgreSQL Configuration
+
+```sql
+-- Must be PostgreSQL 10 or higher
+SELECT version();
+
+-- Check WAL level (must be 'logical' for CDC)
+SHOW wal_level;
+
+-- Check replication slots and senders (need at least 1 each for pg-warehouse)
+SHOW max_replication_slots;   -- recommended: 4
+SHOW max_wal_senders;         -- recommended: 4
+```
+
+If `wal_level` is not `logical`, update `postgresql.conf` and **restart PostgreSQL**:
+
+```ini
+wal_level = logical
+max_replication_slots = 4
+max_wal_senders = 4
+```
+
+### PostgreSQL User Setup
+
+The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
+
+```sql
+-- Create a dedicated warehouse user
+CREATE USER warehouse WITH PASSWORD 'your_password' REPLICATION;
+
+-- Grant access to the source database
+GRANT CONNECT ON DATABASE mydb TO warehouse;
+GRANT USAGE ON SCHEMA public TO warehouse;
+
+-- Grant table ownership (required for CDC publication creation)
+ALTER TABLE public.orders OWNER TO warehouse;
+ALTER TABLE public.customers OWNER TO warehouse;
+-- Repeat for all tables you want to replicate
+```
+
+### Validate Connectivity
+
+```bash
+psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
+```
+---
+
+## Pre-Seeding DuckDB (Fast Initial Load)
+
+For large databases, the default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
+
+This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
+
+### Step 1: Setup CDC and Capture LSN
+
+```bash
+pg-warehouse cdc setup --config pg-warehouse.yml
+
+# Capture the current WAL position — write this down
+psql postgres://warehouse:password@pg-host:5432/mydb -tA \
+  -c "SELECT pg_current_wal_lsn();"
+# Output: 72/F1E38898
+```
+
+### Step 2: Initialize DuckDB
+
+```bash
+pg-warehouse init --config pg-warehouse.yml
+```
+
+### Step 3: Bulk Load Tables
+
+Use `pg_dump` to export and load into DuckDB. This is production-safe — `pg_dump` uses a `REPEATABLE READ` snapshot internally, respects connection limits, and is well understood by DBAs.
+
+```bash
+# Export (parallel, consistent snapshot)
+pg_dump \
+  --host=pg-host --port=5432 --username=warehouse --dbname=mydb \
+  --format=directory --jobs=4 --data-only \
+  --table='public.orders' --table='public.customers' \
+  --file=/tmp/pg_dump_out
+```
+
+Alternatively, use `COPY TO` for more control:
+
+```bash
+psql postgres://warehouse:password@pg-host:5432/mydb <<'SQL'
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+COPY public.orders TO '/tmp/orders.csv' WITH (FORMAT csv, HEADER);
+COPY public.customers TO '/tmp/customers.csv' WITH (FORMAT csv, HEADER);
+COMMIT;
+SQL
+```
+
 > New to these requirements? See [Prerequisites Details](#prerequisites-details) in the Reference section.
 
-## 1. Build
+## 1. Building Binary
 
 ```bash
 go build -o pg-warehouse ./cmd/pg-warehouse/
@@ -115,52 +222,7 @@ pg-warehouse export \
 
 ---
 
-## Pre-Seeding DuckDB (Fast Initial Load)
 
-For large databases, the default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
-
-This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
-
-### Step 1: Setup CDC and Capture LSN
-
-```bash
-pg-warehouse cdc setup --config pg-warehouse.yml
-
-# Capture the current WAL position — write this down
-psql postgres://warehouse:password@pg-host:5432/mydb -tA \
-  -c "SELECT pg_current_wal_lsn();"
-# Output: 72/F1E38898
-```
-
-### Step 2: Initialize DuckDB
-
-```bash
-pg-warehouse init --config pg-warehouse.yml
-```
-
-### Step 3: Bulk Load Tables
-
-Use `pg_dump` to export and load into DuckDB. This is production-safe — `pg_dump` uses a `REPEATABLE READ` snapshot internally, respects connection limits, and is well understood by DBAs.
-
-```bash
-# Export (parallel, consistent snapshot)
-pg_dump \
-  --host=pg-host --port=5432 --username=warehouse --dbname=mydb \
-  --format=directory --jobs=4 --data-only \
-  --table='public.orders' --table='public.customers' \
-  --file=/tmp/pg_dump_out
-```
-
-Alternatively, use `COPY TO` for more control:
-
-```bash
-psql postgres://warehouse:password@pg-host:5432/mydb <<'SQL'
-BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-COPY public.orders TO '/tmp/orders.csv' WITH (FORMAT csv, HEADER);
-COPY public.customers TO '/tmp/customers.csv' WITH (FORMAT csv, HEADER);
-COMMIT;
-SQL
-```
 
 Load into DuckDB:
 
@@ -194,63 +256,7 @@ This skips the initial snapshot, sets all tables to the captured LSN, and starts
 
 # Reference
 
-## Prerequisites Details
 
-### PostgreSQL Configuration
-
-```sql
--- Must be PostgreSQL 10 or higher
-SELECT version();
-
--- Check WAL level (must be 'logical' for CDC)
-SHOW wal_level;
-
--- Check replication slots and senders (need at least 1 each for pg-warehouse)
-SHOW max_replication_slots;   -- recommended: 4
-SHOW max_wal_senders;         -- recommended: 4
-```
-
-If `wal_level` is not `logical`, update `postgresql.conf` and **restart PostgreSQL**:
-
-```ini
-wal_level = logical
-max_replication_slots = 4
-max_wal_senders = 4
-```
-
-### PostgreSQL User Setup
-
-The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
-
-```sql
--- Create a dedicated warehouse user
-CREATE USER warehouse WITH PASSWORD 'your_password' REPLICATION;
-
--- Grant access to the source database
-GRANT CONNECT ON DATABASE mydb TO warehouse;
-GRANT USAGE ON SCHEMA public TO warehouse;
-
--- Grant table ownership (required for CDC publication creation)
-ALTER TABLE public.orders OWNER TO warehouse;
-ALTER TABLE public.customers OWNER TO warehouse;
--- Repeat for all tables you want to replicate
-```
-
-### Validate Connectivity
-
-```bash
-psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
-```
-
-### System Requirements
-
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| Go | 1.25+ | 1.25+ |
-| PostgreSQL | 10+ | 16+ |
-| DuckDB | Embedded (no install) | — |
-| Disk space | 2x source data size | 3x source data size |
-| Memory | 512 MB | 2 GB+ for large snapshots |
 
 ## Configuration File Reference
 
