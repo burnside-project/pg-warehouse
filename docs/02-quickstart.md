@@ -63,7 +63,6 @@ ALTER TABLE public.customers OWNER TO warehouse;
 ```bash
 psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 ```
----
 
 ### Pre-Seeding DuckDB (Fast Initial Load)
 
@@ -71,7 +70,7 @@ For large databases, the default CDC snapshot can take hours because it loads ea
 
 This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
 
-### Step 1: Setup CDC and Capture LSN
+#### Step 1: Setup CDC and Capture LSN
 
 ```bash
 pg-warehouse cdc setup --config pg-warehouse.yml
@@ -82,7 +81,7 @@ psql postgres://warehouse:password@pg-host:5432/mydb -tA \
 # Output: 72/F1E38898
 ```
 
-### Step 2 Create `pg-warehouse.yml` in your working directory. 
+#### Create `pg-warehouse.yml` in your working directory. 
 
 See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
 
@@ -112,13 +111,13 @@ sync:
       watermark_column: updated_at
 ```
 
-### Step 3: Initialize DuckDB
+## Initialize DuckDB
 
 ```bash
 pg-warehouse init --config pg-warehouse.yml
 ```
 
-### Step 4: Bulk Load Tables
+## Bulk Load Tables
 
 Use `pg_dump` to export and load into DuckDB. This is production-safe — `pg_dump` uses a `REPEATABLE READ` snapshot internally, respects connection limits, and is well understood by DBAs.
 
@@ -153,7 +152,7 @@ CREATE OR REPLACE TABLE raw.customers AS
 SQL
 ```
 
-### Step 5: Start CDC from Captured LSN
+### Start CDC from Captured LSN
 
 ```bash
 pg-warehouse cdc start --from-lsn "72/F1E38898"
