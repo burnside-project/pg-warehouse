@@ -34,7 +34,7 @@ SHOW max_replication_slots;   -- recommended: 4
 SHOW max_wal_senders;         -- recommended: 4
 ```
 
-If `wal_level` is not `logical`, update `postgresql.conf` and **restart PostgreSQL**:
+> If `wal_level` is not `logical`, update `postgresql.conf` and **restart PostgreSQL**:
 
 ```ini
 wal_level = logical
@@ -44,7 +44,7 @@ max_wal_senders = 4
 
 ### 2. PostgreSQL User Setup
 
-The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
+> The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
 
 ```sql
 -- Create a dedicated warehouse user
@@ -68,10 +68,11 @@ SHOW hba_file;
 
 ```bash
 ## Edit pg_hba.conf
-
-vi pg_hba.conf
- 
 # add following values at the bottom of the file 
+vi pg_hba.conf
+```
+
+```ini
 # TYPE  DATABASE        USER            ADDRESS          METHOD
 host    replication    warehouse    xx.xx.xx.0/24    scram-sha-256
 # database user you created above | subnet where you are running pg-warehouse from 
