@@ -358,6 +358,8 @@ pg-warehouse run \
   --file-type parquet
 ```
 
+> For a complete walkthrough of building SQL pipelines (silver and feat layers), naming conventions, and the CDC pause/resume pattern, see [Development Workflow](08-development-workflow.md).
+
 ### How to Preview and Export from pg-warehouse ?
 
 ```bash

@@ -53,6 +53,7 @@ Wrote 3,209 rows to ./out/customer_features.parquet (428 KB)
 | [Sync Modes](docs/05-sync.md) | Full vs. incremental vs. CDC |
 | [Configuration](docs/06-configuration.md) | YAML reference |
 | [Open-Core Strategy](docs/07-open-core.md) | OSS vs. commercial boundary |
+| [Development Workflow](docs/08-development-workflow.md) | SQL pipelines: raw → silver → feat |
 
 ## Why pg-warehouse?
 
