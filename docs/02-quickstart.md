@@ -59,6 +59,30 @@ ALTER TABLE public.orders OWNER TO warehouse;
 ALTER TABLE public.customers OWNER TO warehouse;
 -- Repeat for all tables you want to replicate
 ```
+```bash
+# We need to enable the replication user
+SHOW hba_file;
+
+# Will show localtion of the file like ... "/etc/postgresql/18/main/pg_hba.conf"
+
+vi pg_hba.conf
+ 
+# add following values at the bottom of the file 
+# TYPE  DATABASE        USER            ADDRESS          METHOD
+host    replication    warehouse    xx.xx.xx.0/24    scram-sha-256
+# database user you created above | subnet where you are running pg-warehouse from 
+```
+
+```sql 
+-- validte if your replication user warehouse has proper credentials
+SELECT rolname, rolcanlogin, rolreplication
+FROM pg_roles
+WHERE rolname IN ('warehouse')
+
+-- you will see something like this 
+-- rolcanlogin = true
+-- rolreplication = true
+```
 
 > Validate Connectivity
 
