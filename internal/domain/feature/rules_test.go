@@ -10,7 +10,9 @@ func TestValidateTargetTable(t *testing.T) {
 	}{
 		{"empty", "", true},
 		{"wrong schema", "raw.orders", true},
-		{"correct schema", "feat.customer_features", false},
+		{"stage schema rejected", "stage.orders", true},
+		{"silver schema", "silver.customer_360", false},
+		{"feat schema", "feat.customer_features", false},
 	}
 
 	for _, tt := range tests {

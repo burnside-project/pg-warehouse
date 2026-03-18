@@ -1,4 +1,5 @@
-.PHONY: build run test lint fmt vet docker-build docker-up clean release-dry-run changelog
+.PHONY: build run test lint fmt vet docker-build docker-up clean release-dry-run changelog \
+       pipeline pipeline-silver pipeline-feat pipeline-preview pipeline-status
 
 BINARY := pg-warehouse
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -39,3 +40,29 @@ changelog:
 	@echo "Unreleased changes since $$(git describe --tags --abbrev=0 2>/dev/null || echo 'initial commit'):"
 	@echo ""
 	@git log $$(git describe --tags --abbrev=0 2>/dev/null)..HEAD --oneline 2>/dev/null || git log --oneline
+
+# ──────────────────────────────────────────────────────────────────────
+# Pipeline (Medallion Architecture: raw → silver → feat)
+# ──────────────────────────────────────────────────────────────────────
+
+pipeline:
+	@echo "Running full pipeline (silver → feat)..."
+	./scripts/run-pipeline.sh
+
+pipeline-silver:
+	@echo "Running silver layer only..."
+	./scripts/run-pipeline.sh --silver-only
+
+pipeline-feat:
+	@echo "Running feat layer only..."
+	./scripts/run-pipeline.sh --feat-only
+
+pipeline-preview:
+	@echo "Previewing feat tables (10 rows each)..."
+	./scripts/run-pipeline.sh --preview
+
+pipeline-status:
+	@echo "Recent pipeline runs:"
+	@sqlite3 -header -column .pgwh/state.db \
+		'SELECT * FROM feature_runs ORDER BY started_at DESC LIMIT 20;' 2>/dev/null \
+		|| echo "No state database found. Run 'pg-warehouse init' first."

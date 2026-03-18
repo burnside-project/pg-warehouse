@@ -5,13 +5,13 @@ import (
 	"strings"
 )
 
-// ValidateTargetTable ensures the target table is in the feat schema.
+// ValidateTargetTable ensures the target table is in the silver or feat schema.
 func ValidateTargetTable(target string) error {
 	if target == "" {
 		return fmt.Errorf("target table must not be empty")
 	}
-	if !strings.HasPrefix(target, "feat.") {
-		return fmt.Errorf("target table must be in the 'feat' schema, got: %s", target)
+	if !strings.HasPrefix(target, "feat.") && !strings.HasPrefix(target, "silver.") {
+		return fmt.Errorf("target table must be in the 'silver' or 'feat' schema, got: %s", target)
 	}
 	return nil
 }

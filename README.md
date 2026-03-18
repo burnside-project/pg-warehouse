@@ -53,6 +53,7 @@ Wrote 3,209 rows to ./out/customer_features.parquet (428 KB)
 | [Sync Modes](docs/05-sync.md) | Full vs. incremental vs. CDC |
 | [Configuration](docs/06-configuration.md) | YAML reference |
 | [Open-Core Strategy](docs/07-open-core.md) | OSS vs. commercial boundary |
+| [Development Workflow](docs/08-development-workflow.md) | SQL pipelines: raw → silver → feat |
 
 ## Why pg-warehouse?
 
@@ -123,9 +124,10 @@ $ pg-warehouse doctor
 - [x] Automatic sync mode detection per table
 
 **Analytics**
-- [x] Embedded DuckDB columnar warehouse
-- [x] SQL feature pipelines targeting `feat.*` schema
+- [x] Embedded DuckDB columnar warehouse (Medallion Architecture)
+- [x] SQL pipelines targeting `silver.*` (curated) and `feat.*` (analytics-ready) schemas
 - [x] Preview query results before export
+- [x] Fast pre-seeding via `COPY TO CSV` + `--from-lsn` (minutes vs. hours)
 
 **Export**
 - [x] Parquet export

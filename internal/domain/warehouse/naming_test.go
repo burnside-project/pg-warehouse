@@ -26,9 +26,17 @@ func TestFeatTableName(t *testing.T) {
 	}
 }
 
+func TestSilverTableName(t *testing.T) {
+	got := SilverTableName("customer_360")
+	want := "silver.customer_360"
+	if got != want {
+		t.Errorf("SilverTableName(customer_360) = %q, want %q", got, want)
+	}
+}
+
 func TestAllSchemas(t *testing.T) {
 	schemas := AllSchemas()
-	if len(schemas) != 3 {
-		t.Errorf("AllSchemas() returned %d schemas, want 3", len(schemas))
+	if len(schemas) != 4 {
+		t.Errorf("AllSchemas() returned %d schemas, want 4", len(schemas))
 	}
 }
