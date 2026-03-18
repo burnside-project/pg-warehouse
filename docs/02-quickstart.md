@@ -450,7 +450,7 @@ SQL
 
 ## pg-warehouse DuckDB Warehouse Architecture
 
-> **pg-warehouse is a **single DuckDB database file** containing three schemas and follows Medallion Architecture for lakehouses:
+> **pg-warehouse** is a **single DuckDB database file** containing three schemas and follows **Medallion Architecture for lakehouses**
 
 | Schema | Purpose | Written By |
 |--------|---------|------------|
