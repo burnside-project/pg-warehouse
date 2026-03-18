@@ -42,6 +42,18 @@ $ pg-warehouse run --sql-file ./sql/customer_features.sql --output ./out/custome
 Wrote 3,209 rows to ./out/customer_features.parquet (428 KB)
 ```
 
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [Architecture](docs/01-architecture.md) | Hexagonal design, layers, port interfaces |
+| [Quickstart](docs/02-quickstart.md) | Full walkthrough with examples |
+| [State Database](docs/03-state-db.md) | SQLite schema and semantics |
+| [CDC Guide](docs/04-cdc.md) | Logical replication setup and lifecycle |
+| [Sync Modes](docs/05-sync.md) | Full vs. incremental vs. CDC |
+| [Configuration](docs/06-configuration.md) | YAML reference |
+| [Open-Core Strategy](docs/07-open-core.md) | OSS vs. commercial boundary |
+
 ## Why pg-warehouse?
 
 Getting data out of PostgreSQL for analytics or ML usually means stitching together Python scripts, cron jobs, and a cloud warehouse you don't need. pg-warehouse replaces that with a single binary: sync tables into an embedded DuckDB, run SQL feature pipelines, and export to Parquet or CSV. Everything runs locally, on your machine, with no external dependencies.
@@ -136,18 +148,6 @@ See [docs/01-architecture.md](docs/01-architecture.md) for the full design.
 The open-source edition covers the full developer workflow: sync, CDC, DuckDB, SQL pipelines, and local export. Production operations -- scheduling, cloud storage export (S3/GCS/Iceberg), remote state, RBAC, and lineage -- are commercial.
 
 See [docs/07-open-core.md](docs/07-open-core.md) for the boundary details.
-
-## Documentation
-
-| Doc | Description |
-|-----|-------------|
-| [Architecture](docs/01-architecture.md) | Hexagonal design, layers, port interfaces |
-| [Quickstart](docs/02-quickstart.md) | Full walkthrough with examples |
-| [State Database](docs/03-state-db.md) | SQLite schema and semantics |
-| [CDC Guide](docs/04-cdc.md) | Logical replication setup and lifecycle |
-| [Sync Modes](docs/05-sync.md) | Full vs. incremental vs. CDC |
-| [Configuration](docs/06-configuration.md) | YAML reference |
-| [Open-Core Strategy](docs/07-open-core.md) | OSS vs. commercial boundary |
 
 ## Community
 

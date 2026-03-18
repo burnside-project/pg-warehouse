@@ -82,9 +82,22 @@ var cdcTeardownCmd = &cobra.Command{
 	},
 }
 
+var cdcFromLSN string
+
 var cdcStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start CDC streaming (Ctrl+C to stop gracefully)",
+	Long: `Start CDC streaming from PostgreSQL to DuckDB.
+
+Use --from-lsn to skip the initial snapshot and start streaming from a known LSN.
+This is useful when you have pre-seeded DuckDB using a fast bulk copy (pg_dump,
+COPY TO CSV, or DuckDB postgres_scan) and want CDC to catch up from that point.
+
+Example workflow:
+  1. pg-warehouse cdc setup
+  2. psql -c "SELECT pg_current_wal_lsn();"     → 72/6DB940E0
+  3. Bulk load tables into DuckDB (COPY, pg_dump, postgres_scan)
+  4. pg-warehouse cdc start --from-lsn 72/6DB940E0`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -116,9 +129,12 @@ var cdcStartCmd = &cobra.Command{
 		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
 
 		fmt.Printf("Starting CDC streaming (slot=%s, publication=%s)\n", app.Cfg.CDC.SlotName, app.Cfg.CDC.PublicationName)
+		if cdcFromLSN != "" {
+			fmt.Printf("Fast-seed mode: skipping snapshot, starting from LSN %s\n", cdcFromLSN)
+		}
 		fmt.Println("Press Ctrl+C to stop")
 
-		err = svc.Start(ctx, app.Cfg.CDC, app.Cfg.Sync.Tables)
+		err = svc.Start(ctx, app.Cfg.CDC, app.Cfg.Sync.Tables, cdcFromLSN)
 		if err != nil && ctx.Err() != nil {
 			// Context cancelled = graceful shutdown
 			fmt.Println("CDC stopped gracefully")
@@ -175,6 +191,7 @@ var cdcStatusCmd = &cobra.Command{
 }
 
 func init() {
+	cdcStartCmd.Flags().StringVar(&cdcFromLSN, "from-lsn", "", "skip initial snapshot and start streaming from this LSN (for fast-seed workflows)")
 	cdcCmd.AddCommand(cdcSetupCmd)
 	cdcCmd.AddCommand(cdcTeardownCmd)
 	cdcCmd.AddCommand(cdcStartCmd)

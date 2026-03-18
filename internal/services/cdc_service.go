@@ -97,7 +97,10 @@ func (s *CDCService) Status(ctx context.Context, cfg models.CDCCfg) (*ports.CDCS
 }
 
 // Start begins the CDC streaming process.
-func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs []models.TableConfig) error {
+// If fromLSN is non-empty, the initial snapshot is skipped and all tables are
+// set to that LSN. This supports fast-seed workflows where DuckDB has been
+// pre-populated via bulk copy (pg_dump, COPY TO, or DuckDB postgres_scan).
+func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs []models.TableConfig, fromLSN string) error {
 	pid := os.Getpid()
 	hostname, _ := os.Hostname()
 
@@ -123,44 +126,63 @@ func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs 
 		tableConfigMap[tc.Name] = tc
 	}
 
-	// Phase 1: Initial snapshot for tables not yet synced
-	for _, table := range cfg.Tables {
-		cdcState, err := s.state.GetCDCState(ctx, table)
-		if err != nil {
-			return fmt.Errorf("failed to get CDC state for %s: %w", table, err)
-		}
-
-		if cdcState == nil || cdcState.ConfirmedLSN == "" {
-			s.logger.Info("performing initial snapshot for %s", table)
-
-			rows, columns, snapshotLSN, err := s.cdcSource.StartSnapshot(ctx, table)
-			if err != nil {
-				return fmt.Errorf("snapshot failed for %s: %w", table, err)
-			}
-
-			parts := strings.SplitN(table, ".", 2)
-			rawName := table
-			if len(parts) == 2 {
-				rawName = parts[1]
-			}
-			rawTable := warehouse.RawTableName(rawName)
-
-			if err := s.warehouse.CreateTableFromRows(ctx, rawTable, rows, columns); err != nil {
-				return fmt.Errorf("failed to write snapshot for %s: %w", table, err)
-			}
-
+	// Phase 1: Fast-seed mode — skip snapshot, set all tables to the provided LSN
+	if fromLSN != "" {
+		s.logger.Info("fast-seed mode: setting all tables to LSN %s, skipping snapshot", fromLSN)
+		for _, table := range cfg.Tables {
 			newState := &models.CDCState{
 				TableName:       table,
 				SlotName:        cfg.SlotName,
 				PublicationName: cfg.PublicationName,
-				ConfirmedLSN:    snapshotLSN,
+				ConfirmedLSN:    fromLSN,
 				Status:          "snapshot",
 			}
 			if err := s.state.UpsertCDCState(ctx, newState); err != nil {
-				return fmt.Errorf("failed to update CDC state: %w", err)
+				return fmt.Errorf("failed to set CDC state for %s: %w", table, err)
+			}
+		}
+		_ = s.state.AddAuditEntry(ctx, models.AuditInfo, "cdc.fast_seed",
+			fmt.Sprintf("fast-seed: set %d tables to LSN %s", len(cfg.Tables), fromLSN), nil)
+	} else {
+		// Phase 1 (normal): Initial snapshot for tables not yet synced
+		for _, table := range cfg.Tables {
+			cdcState, err := s.state.GetCDCState(ctx, table)
+			if err != nil {
+				return fmt.Errorf("failed to get CDC state for %s: %w", table, err)
 			}
 
-			s.logger.Info("snapshot complete for %s: %d rows, LSN=%s", table, len(rows), snapshotLSN)
+			if cdcState == nil || cdcState.ConfirmedLSN == "" {
+				s.logger.Info("performing initial snapshot for %s", table)
+
+				rows, columns, snapshotLSN, err := s.cdcSource.StartSnapshot(ctx, table)
+				if err != nil {
+					return fmt.Errorf("snapshot failed for %s: %w", table, err)
+				}
+
+				parts := strings.SplitN(table, ".", 2)
+				rawName := table
+				if len(parts) == 2 {
+					rawName = parts[1]
+				}
+				rawTable := warehouse.RawTableName(rawName)
+
+				if err := s.warehouse.CreateTableFromRows(ctx, rawTable, rows, columns); err != nil {
+					return fmt.Errorf("failed to write snapshot for %s: %w", table, err)
+				}
+
+				newState := &models.CDCState{
+					TableName:       table,
+					SlotName:        cfg.SlotName,
+					PublicationName: cfg.PublicationName,
+					ConfirmedLSN:    snapshotLSN,
+					Status:          "snapshot",
+				}
+				if err := s.state.UpsertCDCState(ctx, newState); err != nil {
+					return fmt.Errorf("failed to update CDC state: %w", err)
+				}
+
+				s.logger.Info("snapshot complete for %s: %d rows, LSN=%s", table, len(rows), snapshotLSN)
+			}
 		}
 	}
 

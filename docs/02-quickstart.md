@@ -74,6 +74,117 @@ These are hardcoded in the application and not configurable via YAML.
 | CDC LSN confirmation | Every `10 seconds` | `internal/adapters/postgres/cdc.go` | Progress confirmation to PostgreSQL |
 | Max PostgreSQL connections | `5` (hard cap) | `internal/config/config.go` | `max_conns` is capped regardless of config |
 
+## Pre-Seeding DuckDB (Fast Initial Load)
+
+For large databases, the default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
+
+This reduces initial seeding from hours to minutes. For example, 50 million rows (9.6 GB) loads in **~1 minute** using this method vs. ~12 hours with the default snapshot.
+
+### How It Works
+
+```
+1. Create replication slot         → PostgreSQL retains WAL from this point
+2. Capture current WAL LSN         → e.g., 72/F1E38898
+3. Bulk copy tables into DuckDB    → DuckDB postgres_scan or COPY FROM CSV
+4. Start CDC with --from-lsn       → skips snapshot, streams from captured LSN
+5. CDC catches up the WAL delta    → seconds of catchup vs. hours of snapshot
+```
+
+### Step 1: Setup CDC and Capture LSN
+
+```bash
+# Create the publication and replication slot
+pg-warehouse cdc setup --config pg-warehouse.yml
+
+# Capture the current WAL position — this is your reference point
+psql postgres://warehouse:password@pg-host:5432/mydb -tA \
+  -c "SELECT pg_current_wal_lsn();"
+# Output: 72/F1E38898  ← write this down
+```
+
+The replication slot ensures PostgreSQL retains all WAL from this point forward, so no changes are lost during the bulk copy.
+
+### Step 2: Initialize DuckDB
+
+```bash
+pg-warehouse init --config pg-warehouse.yml
+```
+
+### Step 3: Bulk Load Tables into DuckDB
+
+#### Option A: DuckDB `postgres_scan` (recommended, fastest)
+
+DuckDB reads directly from PostgreSQL with zero intermediate files:
+
+```bash
+duckdb warehouse.duckdb <<'SQL'
+INSTALL postgres;
+LOAD postgres;
+
+CREATE OR REPLACE TABLE raw.orders AS
+  SELECT * FROM postgres_scan(
+    'dbname=mydb host=pg-host port=5432 user=warehouse password=password',
+    'public', 'orders');
+
+CREATE OR REPLACE TABLE raw.customers AS
+  SELECT * FROM postgres_scan(
+    'dbname=mydb host=pg-host port=5432 user=warehouse password=password',
+    'public', 'customers');
+
+-- Repeat for all tables in your CDC configuration
+SQL
+```
+
+#### Option B: COPY TO CSV with consistent snapshot
+
+For guaranteed point-in-time consistency, use a `REPEATABLE READ` transaction:
+
+```bash
+# Export all tables at a consistent point (within a single transaction)
+psql postgres://warehouse:password@pg-host:5432/mydb <<'SQL'
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+-- All COPY commands below see the database frozen at this instant
+COPY public.orders TO '/tmp/orders.csv' WITH (FORMAT csv, HEADER);
+COPY public.customers TO '/tmp/customers.csv' WITH (FORMAT csv, HEADER);
+-- Repeat for all tables
+COMMIT;
+SQL
+
+# Load into DuckDB
+duckdb warehouse.duckdb <<'SQL'
+CREATE OR REPLACE TABLE raw.orders AS
+  SELECT * FROM read_csv('/tmp/orders.csv', auto_detect=true);
+CREATE OR REPLACE TABLE raw.customers AS
+  SELECT * FROM read_csv('/tmp/customers.csv', auto_detect=true);
+SQL
+```
+
+### Step 4: Start CDC from Captured LSN
+
+```bash
+pg-warehouse cdc start --from-lsn "72/F1E38898"
+```
+
+The `--from-lsn` flag tells pg-warehouse to:
+1. Skip the initial snapshot for all tables
+2. Set the confirmed LSN for every table to the provided value
+3. Start WAL streaming from that position
+4. Catch up the small delta accumulated during the bulk copy (typically seconds)
+
+### Performance Comparison
+
+| Method | 50M rows / 9.6 GB | Memory |
+|--------|-------------------:|-------:|
+| Default CDC snapshot | ~12 hours | 8 GB (buffers in Go) |
+| `postgres_scan` + `--from-lsn` | **~1 minute** | 38 MB (DuckDB manages it) |
+| COPY CSV + `--from-lsn` | ~5 minutes | Disk for CSV files |
+
+### Consistency Notes
+
+- **Option A (`postgres_scan`)**: Each table is read at approximately the captured LSN. Any changes between the LSN capture and the read are replayed by CDC (the DELETE+INSERT pattern makes this idempotent).
+- **Option B (REPEATABLE READ)**: All tables are read at exactly the same point in time. Zero duplicates, zero gaps. Use this for production deployments where strict consistency matters.
+- **The replication slot** guarantees PostgreSQL retains all WAL from the moment it was created. No changes can be lost between the LSN capture and the start of CDC streaming.
+
 ## Before You Begin
 
 Complete these steps before installing or running pg-warehouse.
