@@ -17,7 +17,6 @@
 | Disk space | 2x source data size | 3x source data size |
 | Memory | 512 MB | 2 GB+ for large snapshots |
 
-## Prerequisites Details
 
 ### PostgreSQL Configuration
 
@@ -66,7 +65,7 @@ psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 ```
 ---
 
-## Pre-Seeding DuckDB (Fast Initial Load)
+### Pre-Seeding DuckDB (Fast Initial Load)
 
 For large databases, the default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
 
@@ -83,13 +82,43 @@ psql postgres://warehouse:password@pg-host:5432/mydb -tA \
 # Output: 72/F1E38898
 ```
 
-### Step 2: Initialize DuckDB
+### Step 2 Create `pg-warehouse.yml` in your working directory. 
+
+See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
+
+Minimal example:
+
+```yaml
+project:
+  name: my_warehouse
+
+postgres:
+  url: postgres://warehouse:password@pg-host:5432/mydb
+  schema: public
+
+duckdb:
+  path: ./warehouse.duckdb
+
+sync:
+  mode: incremental
+  tables:
+    - name: public.orders
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: updated_at
+    - name: public.customers
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: updated_at
+```
+
+### Step 3: Initialize DuckDB
 
 ```bash
 pg-warehouse init --config pg-warehouse.yml
 ```
 
-### Step 3: Bulk Load Tables
+### Step 4: Bulk Load Tables
 
 Use `pg_dump` to export and load into DuckDB. This is production-safe — `pg_dump` uses a `REPEATABLE READ` snapshot internally, respects connection limits, and is well understood by DBAs.
 
