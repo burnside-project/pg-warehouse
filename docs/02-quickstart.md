@@ -34,6 +34,67 @@ SHOW max_replication_slots;   -- recommended: 4
 SHOW max_wal_senders;         -- recommended: 4
 ```
 
+> If `wal_level` is not `logical`, update `postgresql.conf` and **restart PostgreSQL**:
+
+```ini
+wal_level = logical
+max_replication_slots = 4
+max_wal_senders = 4
+```
+
+### 2. PostgreSQL User Setup
+
+> The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
+
+```sql
+-- Create a dedicated warehouse user
+CREATE USER warehouse WITH PASSWORD 'your_password' REPLICATION;
+
+-- Grant access to the source database
+GRANT CONNECT ON DATABASE mydb TO warehouse;
+GRANT USAGE ON SCHEMA public TO warehouse;
+
+-- Grant table ownership (required for CDC publication creation)
+ALTER TABLE public.orders OWNER TO warehouse;
+ALTER TABLE public.customers OWNER TO warehouse;
+-- Repeat for all tables you want to replicate
+```
+
+```sql
+-- We need to enable the replication user
+SHOW hba_file;
+```
+
+> Will show location of the file like ... "/etc/postgresql/18/main/pg_hba.conf"
+
+
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| Go | 1.25+ | 1.25+ |
+| PostgreSQL | 10+ | 16+ |
+| DuckDB | Embedded (no install) | — |
+| Disk space | 2x source data size | 3x source data size |
+| Memory | 512 MB | 2 GB+ for large snapshots |
+
+---
+
+## Before you Start - Prerequisites
+
+### 1. Check PostgreSQL Configurations
+
+```sql
+-- Must be PostgreSQL 10 or higher
+SELECT version();
+
+-- Check WAL level (must be 'logical' for CDC)
+SHOW wal_level;
+
+-- Check replication slots and senders (need at least 1 each for pg-warehouse)
+SHOW max_replication_slots;   -- recommended: 4
+SHOW max_wal_senders;         -- recommended: 4
+```
+
 If `wal_level` is not `logical`, update `postgresql.conf` and **restart PostgreSQL**:
 
 ```ini
@@ -60,14 +121,12 @@ ALTER TABLE public.customers OWNER TO warehouse;
 -- Repeat for all tables you want to replicate
 ```
 ```bash
-# We need to enable the replication user
-SHOW hba_file;
-
-# Will show localtion of the file like ... "/etc/postgresql/18/main/pg_hba.conf"
-
-vi pg_hba.conf
- 
+## Edit pg_hba.conf
 # add following values at the bottom of the file 
+vi pg_hba.conf
+```
+
+```ini
 # TYPE  DATABASE        USER            ADDRESS          METHOD
 host    replication    warehouse    xx.xx.xx.0/24    scram-sha-256
 # database user you created above | subnet where you are running pg-warehouse from 
@@ -92,9 +151,9 @@ psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 
 ### 3. Get Postgresql LSN Number so we can pre-seed DuckDB (Fast Initial Load)
 
-> This is IMPORTANT becuase it created a fast provision process!
+> This is IMPORTANT becuase it creates a fast provision process!
 
-The default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
+The default CDC snapshot can take hours because it loads each table row-by-row from the database. A faster approach uses the same pattern as production database replication process: **capture a WAL position, bulk copy the data, then start replication from that position**.
 
 This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
 #### Performance Comparison
@@ -102,7 +161,7 @@ This reduces initial seeding from hours to minutes (50 million rows in ~5-10 min
 | Method | 50M rows / 9.6 GB | Production Safe |
 |--------|-------------------:|:---------------:|
 | Default CDC snapshot | ~12 hours | Yes |
-| `pg_dump` + `--from-lsn` | **~5-10 minutes** | **Yes** |
+| `COPY TO CSV` + `--from-lsn` | **~5-10 minutes** | **Yes** |
 
 > See [Pre-Seeding Details](#pre-seeding-details) in the Reference section for consistency notes and alternative methods.
 > Setup CDC and Capture LSN
@@ -150,7 +209,7 @@ sync:
 ```
 --- 
 
-## Start pg-warehouse - The local-first DataWarehouse
+## Start pg-warehouse - The local-first Data Warehouse
 
 ###  Step 1.  Initialize DuckDB
 
@@ -158,26 +217,23 @@ sync:
 pg-warehouse init --config pg-warehouse.yml
 ```
 
-### Step 2 Dump Data and Bulk Load Tables into DuckDb
+### Step 2 Export Data from PostgreSQL and Load into DuckDB
 
-Use `pg_dump` to export and load into DuckDB. This is production-safe — `pg_dump` uses a `REPEATABLE READ` snapshot internally, respects connection limits, and is well understood by DBAs.
+Use PostgreSQL's `COPY TO` command to export tables as CSV, then load them into DuckDB with `read_csv`. This is production-safe — wrapping the exports in a `REPEATABLE READ` transaction guarantees all tables are exported at the exact same point in time (consistent snapshot).
 
-```bash
-# Export (parallel, consistent snapshot)
-pg_dump \
-  --host=pg-host --port=5432 --username=warehouse --dbname=mydb \
-  --format=directory --jobs=4 --data-only \
-  --table='public.orders' --table='public.customers' \
-  --file=/tmp/pg_dump_out
-```
+> **Why not `pg_dump`?** `pg_dump --format=directory` produces PostgreSQL's internal binary
+> format (`.dat` files) that only `pg_restore` can read — and `pg_restore` can only load into
+> PostgreSQL, not DuckDB. `COPY TO CSV` produces standard CSV files that DuckDB reads natively.
 
-Alternatively, use `COPY TO` for more control:
+#### Export tables as CSV (consistent snapshot)
 
 ```bash
 psql postgres://warehouse:password@pg-host:5432/mydb <<'SQL'
+-- REPEATABLE READ freezes the snapshot — all tables exported at the same point in time
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 COPY public.orders TO '/tmp/orders.csv' WITH (FORMAT csv, HEADER);
 COPY public.customers TO '/tmp/customers.csv' WITH (FORMAT csv, HEADER);
+-- Repeat for all tables in your CDC configuration
 COMMIT;
 SQL
 ```
@@ -199,19 +255,19 @@ SQL
 pg-warehouse cdc start --from-lsn "72/F1E38898"
 ```
 
-> New to these requirements? See [Prerequisites Details](#prerequisites-details) in the Reference section.
+> New to these requirements? See [Before you Start - Prerequisites](#before-you-start---prerequisites) above.
 
 ---
 
 ## Frequently Asked Question 
 
-### How Building Binary ?
+### How to Build a pg-warehouse binary ?
 
 ```bash
 go build -o pg-warehouse ./cmd/pg-warehouse/
 ```
 
-### How to build pg-warehoseu configuration file ?
+### How to build a pg-warehouse configuration file ?
 
 Create `pg-warehouse.yml` in your working directory. See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
 
@@ -412,10 +468,20 @@ logging:
 
 ### Consistency Notes
 
-- **`pg_dump`** uses a `REPEATABLE READ` snapshot internally, so all exported tables are consistent at the same point in time. This is the same mechanism PostgreSQL uses for backups and is safe for production workloads.
-- **`COPY TO` in a `REPEATABLE READ` transaction** provides the same consistency guarantee with more flexibility (e.g., exporting to different formats, filtering columns).
+- **`COPY TO` in a `REPEATABLE READ` transaction** guarantees all tables are exported at exactly the same point in time. This is the same snapshot isolation mechanism PostgreSQL uses internally for `pg_dump` backups. It is production-safe — read-only, respects connection limits, and does not block writes.
 - **The replication slot** created during `cdc setup` guarantees PostgreSQL retains all WAL from the moment it was created. No changes are lost between the LSN capture and the start of CDC streaming.
 - **The WAL delta** between the captured LSN and when CDC starts is typically small (seconds to minutes of changes). CDC catches up this delta automatically before transitioning to live streaming.
+
+### Why not pg_dump?
+
+`pg_dump --format=directory` is the standard tool for PostgreSQL-to-PostgreSQL migrations, but it produces a custom binary format (`.dat` files) that only `pg_restore` can read — and `pg_restore` can only load into PostgreSQL, not DuckDB. Using `COPY TO CSV` instead produces standard CSV files that DuckDB's `read_csv` loads natively with automatic type detection.
+
+| Method | Output Format | Loadable into DuckDB? | Production Safe |
+|--------|--------------|:---------------------:|:---------------:|
+| `COPY TO CSV` in `REPEATABLE READ` | Standard CSV | **Yes** (`read_csv`) | **Yes** |
+| `pg_dump --format=directory` | PostgreSQL binary `.dat` | No (needs `pg_restore`) | Yes |
+| `pg_dump --format=plain` | SQL INSERT statements | Technically (very slow) | Yes |
+| DuckDB `postgres_scan` | Direct read | **Yes** (native) | **No** (high load) |
 
 ### Alternative: DuckDB postgres_scan (non-production only)
 
@@ -432,11 +498,11 @@ CREATE OR REPLACE TABLE raw.orders AS
 SQL
 ```
 
-> **Do not use `postgres_scan` against production databases.** It performs full table scans without throttling or snapshot isolation. Use `pg_dump` instead.
+> **Do not use `postgres_scan` against production databases.** It performs full table scans without throttling or snapshot isolation. Use `COPY TO CSV` instead.
 
-## DuckDB Warehouse Architecture
+## pg-warehouse DuckDB Warehouse Architecture
 
-The warehouse is a **single DuckDB database file** containing three schemas:
+> **pg-warehouse** is a **single DuckDB database file** containing three schemas and follows **Medallion Architecture for lakehouses**
 
 | Schema | Purpose | Written By |
 |--------|---------|------------|
