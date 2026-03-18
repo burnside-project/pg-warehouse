@@ -448,9 +448,9 @@ SQL
 
 > **Do not use `postgres_scan` against production databases.** It performs full table scans without throttling or snapshot isolation. Use `COPY TO CSV` instead.
 
-## DuckDB Warehouse Architecture
+## pg-warehouse DuckDB Warehouse Architecture
 
-The warehouse is a **single DuckDB database file** containing three schemas:
+> **pg-warehouse is a **single DuckDB database file** containing three schemas and follows Medallion Architecture for lakehouses:
 
 | Schema | Purpose | Written By |
 |--------|---------|------------|
