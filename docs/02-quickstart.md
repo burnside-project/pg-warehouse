@@ -66,7 +66,9 @@ ALTER TABLE public.customers OWNER TO warehouse;
 psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 ```
 
-### 3. Pre-Seeding DuckDB (Fast Initial Load)
+### 3. Get Postgresql LSN Number so we can pre-seed DuckDB (Fast Initial Load)
+
+> This is IMPORTANT becuase it created a fast provision process!
 
 The default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
 
@@ -79,8 +81,6 @@ This reduces initial seeding from hours to minutes (50 million rows in ~5-10 min
 | `pg_dump` + `--from-lsn` | **~5-10 minutes** | **Yes** |
 
 > See [Pre-Seeding Details](#pre-seeding-details) in the Reference section for consistency notes and alternative methods.
-
-
 > Setup CDC and Capture LSN
 
 ```bash
@@ -88,7 +88,7 @@ This reduces initial seeding from hours to minutes (50 million rows in ~5-10 min
 # Capture the current WAL position — write this down
 psql postgres://warehouse:password@pg-host:5432/mydb -tA \
   -c "SELECT pg_current_wal_lsn();"
-# Output: 72/F1E38898
+# Example Output: 72/F1E38898
 ```
 
 > Important: Write Down the WAL position as you will need this later in step
@@ -126,7 +126,7 @@ sync:
 ```
 --- 
 
-## Setting up pg-warehouse 
+## Start pg-warehouse - The local-first DataWarehouse
 
 ###  Step 1.  Initialize DuckDB
 
@@ -169,7 +169,7 @@ CREATE OR REPLACE TABLE raw.customers AS
 SQL
 ```
 
-### Step 3 Start CDC from Captured LSN
+### Step 3 Start CDC from Captured LSN (Reference Above)
 
 ```bash
 pg-warehouse cdc start --from-lsn "72/F1E38898"
