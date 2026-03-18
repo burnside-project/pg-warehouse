@@ -142,6 +142,23 @@ COMMIT;
 SQL
 ```
 
+Load into DuckDB:
+
+```bash
+duckdb warehouse.duckdb <<'SQL'
+CREATE OR REPLACE TABLE raw.orders AS
+  SELECT * FROM read_csv('/tmp/orders.csv', auto_detect=true);
+CREATE OR REPLACE TABLE raw.customers AS
+  SELECT * FROM read_csv('/tmp/customers.csv', auto_detect=true);
+SQL
+```
+
+### Step 5: Start CDC from Captured LSN
+
+```bash
+pg-warehouse cdc start --from-lsn "72/F1E38898"
+```
+
 > New to these requirements? See [Prerequisites Details](#prerequisites-details) in the Reference section.
 
 ## 1. Building Binary
@@ -252,24 +269,6 @@ pg-warehouse export \
 ---
 
 
-
-Load into DuckDB:
-
-```bash
-duckdb warehouse.duckdb <<'SQL'
-CREATE OR REPLACE TABLE raw.orders AS
-  SELECT * FROM read_csv('/tmp/orders.csv', auto_detect=true);
-CREATE OR REPLACE TABLE raw.customers AS
-  SELECT * FROM read_csv('/tmp/customers.csv', auto_detect=true);
-SQL
-```
-
-### Step 4: Start CDC from Captured LSN
-
-```bash
-pg-warehouse cdc start --from-lsn "72/F1E38898"
-```
-
 This skips the initial snapshot, sets all tables to the captured LSN, and starts WAL streaming. CDC catches up the small delta accumulated during the bulk copy (typically seconds).
 
 ### Performance Comparison
@@ -284,8 +283,6 @@ This skips the initial snapshot, sets all tables to the captured LSN, and starts
 ---
 
 # Reference
-
-
 
 ## Configuration File Reference
 
