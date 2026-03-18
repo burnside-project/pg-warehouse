@@ -20,7 +20,7 @@
 
 ## Before you Start - Prerequisites
 
-### Check PostgreSQL Configurations
+### 1. Check PostgreSQL Configurations
 
 ```sql
 -- Must be PostgreSQL 10 or higher
@@ -42,7 +42,7 @@ max_replication_slots = 4
 max_wal_senders = 4
 ```
 
-### PostgreSQL User Setup
+### 2. PostgreSQL User Setup
 
 The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
 
@@ -60,19 +60,28 @@ ALTER TABLE public.customers OWNER TO warehouse;
 -- Repeat for all tables you want to replicate
 ```
 
-### Validate Connectivity
+#### Validate Connectivity
 
 ```bash
 psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 ```
 
-### Pre-Seeding DuckDB (Fast Initial Load)
+### 3. Pre-Seeding DuckDB (Fast Initial Load)
 
 The default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
 
 This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
+#### Performance Comparison
 
-#### Step 1: Setup CDC and Capture LSN
+| Method | 50M rows / 9.6 GB | Production Safe |
+|--------|-------------------:|:---------------:|
+| Default CDC snapshot | ~12 hours | Yes |
+| `pg_dump` + `--from-lsn` | **~5-10 minutes** | **Yes** |
+
+> See [Pre-Seeding Details](#pre-seeding-details) in the Reference section for consistency notes and alternative methods.
+
+
+### 4. Setup CDC and Capture LSN
 
 ```bash
 
@@ -82,9 +91,9 @@ psql postgres://warehouse:password@pg-host:5432/mydb -tA \
 # Output: 72/F1E38898
 ```
 
-**Write Down the WAL position as you will need this later in step**
+> Important: Write Down the WAL position as you will need this later in step
 
-#### Create `pg-warehouse.yml` in your working directory. 
+### 5. Create `pg-warehouse.yml` in your working directory. 
 
 See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
 
@@ -114,13 +123,13 @@ sync:
       watermark_column: updated_at
 ```
 
-## Initialize DuckDB
+### 6. Initialize DuckDB
 
 ```bash
 pg-warehouse init --config pg-warehouse.yml
 ```
 
-## Bulk Load Tables
+### 6. Dump Data from Postgrsql and Bulk Load Tables into DuckDb
 
 Use `pg_dump` to export and load into DuckDB. This is production-safe — `pg_dump` uses a `REPEATABLE READ` snapshot internally, respects connection limits, and is well understood by DBAs.
 
@@ -155,7 +164,7 @@ CREATE OR REPLACE TABLE raw.customers AS
 SQL
 ```
 
-### Start CDC from Captured LSN
+### 7. Start CDC from Captured LSN
 
 ```bash
 pg-warehouse cdc start --from-lsn "72/F1E38898"
@@ -163,13 +172,17 @@ pg-warehouse cdc start --from-lsn "72/F1E38898"
 
 > New to these requirements? See [Prerequisites Details](#prerequisites-details) in the Reference section.
 
-## 1. Building Binary
+---
+
+## Frequently Asked Question 
+
+### How Building Binary ?
 
 ```bash
 go build -o pg-warehouse ./cmd/pg-warehouse/
 ```
 
-## 2. Configure
+### How to build pg-warehoseu configuration file ?
 
 Create `pg-warehouse.yml` in your working directory. See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
 
@@ -199,7 +212,7 @@ sync:
       watermark_column: updated_at
 ```
 
-## 3. Initialize
+### How to Initialize pg-warehouse ?
 
 ```bash
 pg-warehouse init --duckdb ./warehouse.duckdb
@@ -207,13 +220,13 @@ pg-warehouse init --duckdb ./warehouse.duckdb
 
 Creates `warehouse.duckdb` (with `raw`, `stage`, `feat` schemas) and `.pgwh/state.db` (SQLite state).
 
-## 4. Validate
+### How to Validate pg-warehouse ?
 
 ```bash
 pg-warehouse doctor
 ```
 
-## 5. Sync Data
+### How to Sync Data into pg-warehouse ?
 
 ```bash
 pg-warehouse sync
@@ -221,7 +234,7 @@ pg-warehouse sync
 
 First run does a full snapshot. Subsequent runs use watermark-based incremental sync.
 
-## 6. CDC (Real-Time Streaming)
+### How to start CDC (Real-Time Streaming) in pg-warehouse ?
 
 ```bash
 # Create publication and replication slot
@@ -237,7 +250,7 @@ pg-warehouse cdc status
 pg-warehouse cdc teardown
 ```
 
-## 7. Inspect
+### How to Inspect pg-warehouse ?
 
 ```bash
 pg-warehouse inspect tables             # List all warehouse tables
@@ -245,7 +258,7 @@ pg-warehouse inspect schema raw.orders   # Describe a table
 pg-warehouse inspect sync-state          # Show sync state
 ```
 
-## 8. Run Feature SQL
+### How to Run Feature SQL pg-warehouse ?
 
 ```bash
 pg-warehouse run \
@@ -255,7 +268,7 @@ pg-warehouse run \
   --file-type parquet
 ```
 
-## 9. Preview and Export
+### How to review and Export pg-warehouse ?
 
 ```bash
 # Preview query results
@@ -267,20 +280,6 @@ pg-warehouse export \
   --output ./out/export.csv \
   --file-type csv
 ```
-
----
-
-
-This skips the initial snapshot, sets all tables to the captured LSN, and starts WAL streaming. CDC catches up the small delta accumulated during the bulk copy (typically seconds).
-
-### Performance Comparison
-
-| Method | 50M rows / 9.6 GB | Production Safe |
-|--------|-------------------:|:---------------:|
-| Default CDC snapshot | ~12 hours | Yes |
-| `pg_dump` + `--from-lsn` | **~5-10 minutes** | **Yes** |
-
-> See [Pre-Seeding Details](#pre-seeding-details) in the Reference section for consistency notes and alternative methods.
 
 ---
 
