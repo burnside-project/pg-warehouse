@@ -209,13 +209,13 @@ pg-warehouse cdc start --from-lsn "72/F1E38898"
 
 ## Frequently Asked Question 
 
-### How Building Binary ?
+### How to Build a pg-warehouse binary ?
 
 ```bash
 go build -o pg-warehouse ./cmd/pg-warehouse/
 ```
 
-### How to build pg-warehoseu configuration file ?
+### How to build a pg-warehouse configuration file ?
 
 Create `pg-warehouse.yml` in your working directory. See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
 
