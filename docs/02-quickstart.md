@@ -68,6 +68,58 @@ SHOW hba_file;
 > Will show location of the file like ... "/etc/postgresql/18/main/pg_hba.conf"
 
 
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| Go | 1.25+ | 1.25+ |
+| PostgreSQL | 10+ | 16+ |
+| DuckDB | Embedded (no install) | — |
+| Disk space | 2x source data size | 3x source data size |
+| Memory | 512 MB | 2 GB+ for large snapshots |
+
+---
+
+## Before you Start - Prerequisites
+
+### 1. Check PostgreSQL Configurations
+
+```sql
+-- Must be PostgreSQL 10 or higher
+SELECT version();
+
+-- Check WAL level (must be 'logical' for CDC)
+SHOW wal_level;
+
+-- Check replication slots and senders (need at least 1 each for pg-warehouse)
+SHOW max_replication_slots;   -- recommended: 4
+SHOW max_wal_senders;         -- recommended: 4
+```
+
+If `wal_level` is not `logical`, update `postgresql.conf` and **restart PostgreSQL**:
+
+```ini
+wal_level = logical
+max_replication_slots = 4
+max_wal_senders = 4
+```
+
+### 2. PostgreSQL User Setup
+
+The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
+
+```sql
+-- Create a dedicated warehouse user
+CREATE USER warehouse WITH PASSWORD 'your_password' REPLICATION;
+
+-- Grant access to the source database
+GRANT CONNECT ON DATABASE mydb TO warehouse;
+GRANT USAGE ON SCHEMA public TO warehouse;
+
+-- Grant table ownership (required for CDC publication creation)
+ALTER TABLE public.orders OWNER TO warehouse;
+ALTER TABLE public.customers OWNER TO warehouse;
+-- Repeat for all tables you want to replicate
+```
 ```bash
 ## Edit pg_hba.conf
 # add following values at the bottom of the file 
