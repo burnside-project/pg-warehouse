@@ -1,13 +1,12 @@
 # Quickstart
 
-## Prerequisites
+
+## System Requirements
 
 - Go 1.25+
 - PostgreSQL 10+ with `wal_level=logical` (for CDC)
 - PostgreSQL user with `REPLICATION` privilege and table ownership
 
-
-### System Requirements
 
 | Requirement | Minimum | Recommended |
 |-------------|---------|-------------|
@@ -17,8 +16,11 @@
 | Disk space | 2x source data size | 3x source data size |
 | Memory | 512 MB | 2 GB+ for large snapshots |
 
+---
 
-### PostgreSQL Configuration
+## Before you Start - Prerequisites
+
+### Check PostgreSQL Configurations
 
 ```sql
 -- Must be PostgreSQL 10 or higher
@@ -66,20 +68,21 @@ psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 
 ### Pre-Seeding DuckDB (Fast Initial Load)
 
-For large databases, the default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
+The default CDC snapshot can take hours because it loads each table row-by-row through the application. A faster approach uses the same pattern as production database replication: **capture a WAL position, bulk copy the data, then start replication from that position**.
 
 This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
 
 #### Step 1: Setup CDC and Capture LSN
 
 ```bash
-pg-warehouse cdc setup --config pg-warehouse.yml
 
 # Capture the current WAL position — write this down
 psql postgres://warehouse:password@pg-host:5432/mydb -tA \
   -c "SELECT pg_current_wal_lsn();"
 # Output: 72/F1E38898
 ```
+
+**Write Down the WAL position as you will need this later in step**
 
 #### Create `pg-warehouse.yml` in your working directory. 
 
