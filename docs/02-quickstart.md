@@ -112,51 +112,65 @@ pg-warehouse init --config pg-warehouse.yml
 
 ### Step 3: Bulk Load Tables into DuckDB
 
-#### Option A: DuckDB `postgres_scan` (recommended, fastest)
+Use `pg_dump` to export tables from PostgreSQL and load them into DuckDB. This is the
+recommended approach for production because `pg_dump` is optimized for minimal impact
+on the source database — it uses a `REPEATABLE READ` snapshot transaction, respects
+connection limits, and is a well-understood operation that DBAs can monitor and control.
 
-DuckDB reads directly from PostgreSQL with zero intermediate files:
+> **Why not `postgres_scan`?** DuckDB's `postgres_scan` extension opens direct connections
+> to the production database and performs full table scans without the throttling and
+> snapshot isolation that `pg_dump` provides. This can cause significant load on production
+> servers. Use `postgres_scan` only against read replicas or non-production databases.
+
+#### Export with pg_dump (consistent snapshot, production-safe)
 
 ```bash
-duckdb warehouse.duckdb <<'SQL'
-INSTALL postgres;
-LOAD postgres;
+# Export tables as CSV using pg_dump's directory format
+# --jobs=4 enables parallel export (adjust to your server's capacity)
+# --snapshot is automatically consistent within the dump
+pg_dump \
+  --host=pg-host \
+  --port=5432 \
+  --username=warehouse \
+  --dbname=mydb \
+  --format=directory \
+  --jobs=4 \
+  --data-only \
+  --table='public.orders' \
+  --table='public.customers' \
+  --file=/tmp/pg_dump_out
+```
 
-CREATE OR REPLACE TABLE raw.orders AS
-  SELECT * FROM postgres_scan(
-    'dbname=mydb host=pg-host port=5432 user=warehouse password=password',
-    'public', 'orders');
+Alternatively, use `COPY TO` within a `REPEATABLE READ` transaction for more control:
 
-CREATE OR REPLACE TABLE raw.customers AS
-  SELECT * FROM postgres_scan(
-    'dbname=mydb host=pg-host port=5432 user=warehouse password=password',
-    'public', 'customers');
-
+```bash
+psql postgres://warehouse:password@pg-host:5432/mydb <<'SQL'
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+-- All COPY commands see the database frozen at this instant
+-- This guarantees all tables are exported at the same point in time
+COPY public.orders TO '/tmp/orders.csv' WITH (FORMAT csv, HEADER);
+COPY public.customers TO '/tmp/customers.csv' WITH (FORMAT csv, HEADER);
 -- Repeat for all tables in your CDC configuration
+COMMIT;
 SQL
 ```
 
-#### Option B: COPY TO CSV with consistent snapshot
-
-For guaranteed point-in-time consistency, use a `REPEATABLE READ` transaction:
+#### Load into DuckDB
 
 ```bash
-# Export all tables at a consistent point (within a single transaction)
-psql postgres://warehouse:password@pg-host:5432/mydb <<'SQL'
-BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
--- All COPY commands below see the database frozen at this instant
-COPY public.orders TO '/tmp/orders.csv' WITH (FORMAT csv, HEADER);
-COPY public.customers TO '/tmp/customers.csv' WITH (FORMAT csv, HEADER);
--- Repeat for all tables
-COMMIT;
-SQL
-
-# Load into DuckDB
 duckdb warehouse.duckdb <<'SQL'
 CREATE OR REPLACE TABLE raw.orders AS
   SELECT * FROM read_csv('/tmp/orders.csv', auto_detect=true);
 CREATE OR REPLACE TABLE raw.customers AS
   SELECT * FROM read_csv('/tmp/customers.csv', auto_detect=true);
+-- Repeat for all tables
 SQL
+```
+
+#### Clean up export files
+
+```bash
+rm -rf /tmp/pg_dump_out /tmp/*.csv
 ```
 
 ### Step 4: Start CDC from Captured LSN
@@ -173,17 +187,18 @@ The `--from-lsn` flag tells pg-warehouse to:
 
 ### Performance Comparison
 
-| Method | 50M rows / 9.6 GB | Memory |
-|--------|-------------------:|-------:|
-| Default CDC snapshot | ~12 hours | 8 GB (buffers in Go) |
-| `postgres_scan` + `--from-lsn` | **~1 minute** | 38 MB (DuckDB manages it) |
-| COPY CSV + `--from-lsn` | ~5 minutes | Disk for CSV files |
+| Method | 50M rows / 9.6 GB | Production Safe |
+|--------|-------------------:|:---------------:|
+| Default CDC snapshot | ~12 hours | Yes |
+| `pg_dump` + CSV + `--from-lsn` | **~5-10 minutes** | **Yes** |
+| `postgres_scan` + `--from-lsn` | ~1 minute | No (high source load) |
 
-### Consistency Notes
+### Consistency and Safety Notes
 
-- **Option A (`postgres_scan`)**: Each table is read at approximately the captured LSN. Any changes between the LSN capture and the read are replayed by CDC (the DELETE+INSERT pattern makes this idempotent).
-- **Option B (REPEATABLE READ)**: All tables are read at exactly the same point in time. Zero duplicates, zero gaps. Use this for production deployments where strict consistency matters.
-- **The replication slot** guarantees PostgreSQL retains all WAL from the moment it was created. No changes can be lost between the LSN capture and the start of CDC streaming.
+- **`pg_dump`** uses a `REPEATABLE READ` snapshot internally, so all exported tables are consistent at the same point in time. This is the same mechanism PostgreSQL uses for backups and is safe for production workloads.
+- **`COPY TO` in a `REPEATABLE READ` transaction** provides the same consistency guarantee with more flexibility (e.g., exporting to different formats, filtering columns).
+- **The replication slot** created in Step 1 guarantees PostgreSQL retains all WAL from the moment it was created. No changes are lost between the LSN capture and the start of CDC streaming.
+- **The WAL delta** between the captured LSN and when CDC starts is typically small (seconds to minutes of changes). CDC catches up this delta automatically before transitioning to live streaming.
 
 ## Before You Begin
 
