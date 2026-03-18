@@ -60,7 +60,7 @@ ALTER TABLE public.customers OWNER TO warehouse;
 -- Repeat for all tables you want to replicate
 ```
 
-#### Validate Connectivity
+> Validate Connectivity
 
 ```bash
 psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
@@ -81,7 +81,7 @@ This reduces initial seeding from hours to minutes (50 million rows in ~5-10 min
 > See [Pre-Seeding Details](#pre-seeding-details) in the Reference section for consistency notes and alternative methods.
 
 
-### 4. Setup CDC and Capture LSN
+> Setup CDC and Capture LSN
 
 ```bash
 
@@ -93,7 +93,9 @@ psql postgres://warehouse:password@pg-host:5432/mydb -tA \
 
 > Important: Write Down the WAL position as you will need this later in step
 
-### 5. Create `pg-warehouse.yml` in your working directory. 
+--- 
+
+### 4. Create `pg-warehouse.yml` in your working directory. 
 
 See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
 
@@ -122,14 +124,17 @@ sync:
       primary_key: [id]
       watermark_column: updated_at
 ```
+--- 
 
-### 6. Initialize DuckDB
+## Setting up pg-warehouse 
+
+###  Step 1.  Initialize DuckDB
 
 ```bash
 pg-warehouse init --config pg-warehouse.yml
 ```
 
-### 6. Dump Data from Postgrsql and Bulk Load Tables into DuckDb
+### Step 2 Dump Data and Bulk Load Tables into DuckDb
 
 Use `pg_dump` to export and load into DuckDB. This is production-safe — `pg_dump` uses a `REPEATABLE READ` snapshot internally, respects connection limits, and is well understood by DBAs.
 
@@ -164,7 +169,7 @@ CREATE OR REPLACE TABLE raw.customers AS
 SQL
 ```
 
-### 7. Start CDC from Captured LSN
+### Step 3 Start CDC from Captured LSN
 
 ```bash
 pg-warehouse cdc start --from-lsn "72/F1E38898"
