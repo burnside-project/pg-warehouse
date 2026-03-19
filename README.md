@@ -16,15 +16,12 @@
 </p>
 
 ---
-
 ![1.png](assets/1.png)
-
 ---
 ![2.png](assets/2.png)
-
 ---
-
 ![3.png](assets/3.png)
+
 
 ```console
 $ pg-warehouse init --pg-url postgres://user:pass@localhost:5432/appdb
@@ -62,6 +59,16 @@ Getting data out of PostgreSQL for analytics or ML usually means stitching toget
 Python scripts, cron jobs, and a cloud warehouse you don't need. pg-warehouse replaces that with 
 a single binary: sync tables into an embedded DuckDB, run SQL feature pipelines, 
 and export to Parquet or CSV. Everything runs locally, on your machine, with no external dependencies.
+
+## What makes pg-warehouse a local-first Data Warehouse?
+
+| Features              | Exist ? |
+|-----------------------|---------|
+| Analytical Storage (Columnar + Optimized for Reads) | ✅       |
+| Separation from OLTP (Workload Isolation) | ✅       |
+| SQL Analytical Engine | ✅       |
+| Data Transformation Layer (ETL / ELT) | ✅       |
+| Durable Analytical Storage (Files or Tables) | ✅       |
 
 ## Quick comparison
 
