@@ -94,39 +94,9 @@ WHERE rolname IN ('warehouse')
 psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 ```
 
-### 3. Setup CDC and Get PostgreSQL LSN Number for Pre-Seeding DuckDB
+### 3. Create `pg-warehouse.yml` in your working directory.
 
-> This is IMPORTANT because it creates a fast provision process!
-
-The default CDC snapshot can take hours because it loads each table row-by-row from the database. A faster approach uses the same pattern as production database replication process: **capture a WAL position, bulk copy the data, then start replication from that position**.
-
-This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
-
-#### Performance Comparison
-
-| Method | 50M rows / 9.6 GB | Production Safe |
-|--------|-------------------:|:---------------:|
-| Default CDC snapshot | ~12 hours | Yes |
-| `COPY TO CSV` + `--from-lsn` | **~5-10 minutes** | **Yes** |
-
-> See [Pre-Seeding Details](#pre-seeding-details) in the Reference section for consistency notes and alternative methods.
-
-```bash
-# Step A: Create the publication and replication slot FIRST
-# This ensures PostgreSQL retains all WAL from this point forward
-pg-warehouse cdc setup --config pg-warehouse.yml
-
-# Step B: Capture the current WAL position — write this down
-psql postgres://warehouse:password@pg-host:5432/mydb -tA \
-  -c "SELECT pg_current_wal_lsn();"
-# Example Output: 72/F1E38898
-```
-
-> **Important:** Write down the WAL position — you will need this in Step 3 below. The replication slot created in Step A guarantees no changes are lost between now and when CDC starts.
-
----
-
-### 4. Create `pg-warehouse.yml` in your working directory.
+> This config file is required before running any pg-warehouse commands (including `cdc setup` in the next step).
 
 See the [Configuration File Reference](#configuration-file-reference) for all available parameters and their defaults.
 
@@ -163,6 +133,38 @@ sync:
       primary_key: [id]
       watermark_column: updated_at
 ```
+
+---
+
+### 4. Setup CDC and Get PostgreSQL LSN Number for Pre-Seeding DuckDB
+
+> This is IMPORTANT because it creates a fast provision process!
+
+The default CDC snapshot can take hours because it loads each table row-by-row from the database. A faster approach uses the same pattern as production database replication process: **capture a WAL position, bulk copy the data, then start replication from that position**.
+
+This reduces initial seeding from hours to minutes (50 million rows in ~5-10 minutes vs. ~12 hours).
+
+#### Performance Comparison
+
+| Method | 50M rows / 9.6 GB | Production Safe |
+|--------|-------------------:|:---------------:|
+| Default CDC snapshot | ~12 hours | Yes |
+| `COPY TO CSV` + `--from-lsn` | **~5-10 minutes** | **Yes** |
+
+> See [Pre-Seeding Details](#pre-seeding-details) in the Reference section for consistency notes and alternative methods.
+
+```bash
+# Step A: Create the publication and replication slot FIRST
+# This ensures PostgreSQL retains all WAL from this point forward
+pg-warehouse cdc setup --config pg-warehouse.yml
+
+# Step B: Capture the current WAL position — write this down
+psql postgres://warehouse:password@pg-host:5432/mydb -tA \
+  -c "SELECT pg_current_wal_lsn();"
+# Example Output: 72/F1E38898
+```
+
+> **Important:** Write down the WAL position — you will need this in Step 4 below. The replication slot created in Step A guarantees no changes are lost between now and when CDC starts.
 
 ---
 
