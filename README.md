@@ -80,24 +80,30 @@ A local-first Data Warehouse engine that mirrors PostgreSQL data into DuckDB usi
 
 ## How do I do data wrangling?
 Built-in Transformation pipeline using SQL and exports analytics datasets to Parquet.
+https://github.com/burnside-project/pg-warehouse/blob/main/docs/08-development-workflow.md
 
 ## Is it Simple and Cost Effective?
 Instead of building complex pipelines with Kafka, Spark, and cloud warehouses, pg-warehouse 
 lets you run analytics pipelines locally on your PostgreSQL with just SQL!
+https://github.com/burnside-project/pg-warehouse/blob/main/docs/01-architecture.md
 
 
 ## Do I need complex pipeline from PostgreSQL?
 No. pg-warehouse uses production-grade PostgreSQL native CDC logical replication + LSN with the pgoutput protocol.
 This is like running a replication node and we are just ingesting raw data in real time using PostgreSQL Write Ahead Logs.
+https://github.com/burnside-project/pg-warehouse/blob/main/docs/04-cdc.md
 
 ## How does it different from PostgreSQL OLAP Plugins?
 PostgreSQL OLAP plugins → run analytics inside Postgres
 pg-warehouse → moves analytics outside Postgres into DuckDB. 
 pg-warehouse can runs completely isolated in another node
+https://github.com/burnside-project/pg-warehouse/blob/main/docs/01-architecture.md
 
 ## How does it Works?
 pg-warehouse uses a single DuckDB database file with four schemas following Medallion 
 Architecture for lakehouses. RAW,STAGE,SILVER,FEATURE
+https://github.com/burnside-project/pg-warehouse/blob/main/docs/08-development-workflow.md
+
 
 ## Install
 
