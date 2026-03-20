@@ -1,0 +1,143 @@
+# ============================================================================
+# Metrics: Sales
+# Feat table: feat.sales_summary
+# Grain: one row per calendar date
+# ============================================================================
+
+name: sales
+display_name: Sales Metrics
+description: Daily sales KPIs aggregated from enriched orders
+table: feat.sales_summary
+grain: one row per calendar date
+time_column: sale_date
+
+dimensions:
+  - name: sale_date
+    type: date
+    description: Calendar date of the sale
+    synonyms: [date, day, order_date]
+
+measures:
+  - name: order_count
+    type: integer
+    description: Number of distinct orders placed on this date
+    aggregation: SUM
+    synonyms: [orders, num_orders]
+
+  - name: units_sold
+    type: integer
+    description: Total units sold
+    aggregation: SUM
+
+  - name: gross_revenue
+    type: numeric
+    description: Sum of order totals (before coupon discounts)
+    aggregation: SUM
+    unit: USD
+    synonyms: [revenue, sales, total_sales, gmv]
+
+  - name: total_coupon_discounts
+    type: numeric
+    description: Total coupon discounts applied
+    aggregation: SUM
+    unit: USD
+
+  - name: net_revenue
+    type: numeric
+    description: Gross revenue minus coupon discounts
+    aggregation: SUM
+    unit: USD
+    formula: gross_revenue - total_coupon_discounts
+
+  - name: total_tax
+    type: numeric
+    description: Total tax collected
+    aggregation: SUM
+    unit: USD
+
+  - name: total_shipping
+    type: numeric
+    description: Total shipping fees collected
+    aggregation: SUM
+    unit: USD
+
+  - name: avg_order_value
+    type: numeric
+    description: Average order value for the day
+    aggregation: AVG
+    unit: USD
+    synonyms: [aov]
+    formula: gross_revenue / order_count
+
+  - name: avg_items_per_order
+    type: numeric
+    description: Average number of items per order
+    aggregation: AVG
+
+  # Payment breakdown
+  - name: paid_orders
+    type: integer
+    description: Orders with successful payment
+    aggregation: SUM
+
+  - name: pending_orders
+    type: integer
+    description: Orders with pending payment
+    aggregation: SUM
+
+  - name: failed_orders
+    type: integer
+    description: Orders with failed payment
+    aggregation: SUM
+
+  - name: credit_card_orders
+    type: integer
+    description: Orders paid by credit card
+    aggregation: SUM
+
+  - name: paypal_orders
+    type: integer
+    description: Orders paid by PayPal
+    aggregation: SUM
+
+  - name: bank_transfer_orders
+    type: integer
+    description: Orders paid by bank transfer
+    aggregation: SUM
+
+  # Fulfillment
+  - name: delivered_orders
+    type: integer
+    description: Orders marked as delivered
+    aggregation: SUM
+
+  - name: in_transit_orders
+    type: integer
+    description: Orders currently in transit
+    aggregation: SUM
+
+  - name: label_created_orders
+    type: integer
+    description: Orders with shipping label created but not yet shipped
+    aggregation: SUM
+
+  - name: orders_with_coupon
+    type: integer
+    description: Orders that used at least one coupon
+    aggregation: SUM
+
+derived_metrics:
+  - name: payment_success_rate
+    description: Percentage of orders with successful payment
+    formula: "paid_orders * 100.0 / NULLIF(order_count, 0)"
+    unit: percent
+
+  - name: delivery_rate
+    description: Percentage of orders delivered
+    formula: "delivered_orders * 100.0 / NULLIF(order_count, 0)"
+    unit: percent
+
+  - name: coupon_usage_rate
+    description: Percentage of orders using a coupon
+    formula: "orders_with_coupon * 100.0 / NULLIF(order_count, 0)"
+    unit: percent

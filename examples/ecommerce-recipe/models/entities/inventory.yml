@@ -1,0 +1,96 @@
+# ============================================================================
+# Entity: Inventory
+# Feat table: feat.inventory_health
+# Grain: one row per active product
+# ============================================================================
+
+name: inventory
+display_name: Inventory
+description: >
+  Inventory health assessment per active product, combining current stock
+  levels with 30-day sales velocity to produce reorder signals and
+  days-of-stock estimates.
+table: feat.inventory_health
+grain: one row per active product
+primary_key: product_id
+
+columns:
+  - name: product_id
+    type: bigint
+    description: Product identifier
+    role: primary_key
+    references: product.product_id
+
+  - name: product_name
+    type: text
+    description: Product display name
+
+  - name: category_name
+    type: text
+    description: Product category
+
+  - name: stock_status
+    type: text
+    description: "Current stock status: in_stock, low_stock, out_of_stock"
+    enum: [in_stock, low_stock, out_of_stock]
+
+  - name: total_available
+    type: integer
+    description: Total available units across all warehouses
+    synonyms: [available, stock, on_hand]
+
+  - name: total_reserved
+    type: integer
+    description: Units reserved for pending orders
+    synonyms: [reserved, allocated]
+
+  - name: net_available
+    type: integer
+    description: Available minus reserved (free to sell)
+    synonyms: [free_stock, sellable]
+
+  - name: units_sold_last_30d
+    type: integer
+    description: Units sold in the last 30 days (sales velocity)
+    synonyms: [velocity, recent_sales, sold_30d]
+
+  - name: estimated_days_of_stock
+    type: numeric
+    description: >
+      How many days of stock remain at current 30-day velocity.
+      NULL if no recent sales.
+    synonyms: [days_of_stock, runway, stock_days]
+    nullable: true
+
+  - name: reorder_signal
+    type: text
+    description: >
+      Reorder urgency: reorder_urgent (0 available),
+      reorder_soon (<14 days of stock), healthy (sufficient)
+    enum: [reorder_urgent, reorder_soon, healthy]
+    synonyms: [signal, alert, reorder_status]
+
+  - name: variant_count
+    type: integer
+    description: Number of SKU variants
+
+  - name: base_price
+    type: numeric
+    description: Product base price
+    unit: USD
+
+  - name: review_count
+    type: integer
+    description: Number of customer reviews
+
+  - name: avg_rating
+    type: numeric
+    description: Average star rating
+    nullable: true
+
+example_questions:
+  - "Which products need reordering?"
+  - "How many products are out of stock?"
+  - "What products have less than 7 days of stock?"
+  - "Show high-selling products with low inventory"
+  - "What is the total value of available inventory?"

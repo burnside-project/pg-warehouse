@@ -71,9 +71,21 @@ logging:
 
 ### duckdb
 
+**Single-file mode** (default):
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| path | string | **required** | Path to DuckDB file |
+| path | string | **required** | Path to DuckDB file (all schemas in one file) |
+
+**Multi-file mode** (zero-downtime, see [Multi-DuckDB Architecture](09-multi-duckdb-architecture.md)):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| warehouse | string | — | CDC black box: raw.* + stage.* (CDC-owned, exclusive writer) |
+| silver | string | — | Development platform: versioned silver schemas (pipeline-owned) |
+| feature | string | — | Analytics output: feat.* tables + Parquet export (pipeline-owned) |
+
+Use either `path` (single-file) or `warehouse`/`silver`/`feature` (multi-file). If `warehouse` is set, multi-file mode is activated.
 
 ### state
 
@@ -89,6 +101,11 @@ logging:
 | publication_name | string | `pgwh_pub` | PostgreSQL publication name |
 | slot_name | string | `pgwh_slot` | Replication slot name |
 | tables | []string | — | Tables to replicate via CDC |
+| epoch_interval_sec | int | `60` | Seconds between epoch commits (multi-file mode) |
+| epoch_max_rows | int | `10000` | Max rows before forcing epoch commit (multi-file mode) |
+| max_lag_bytes | int | `5368709120` (5GB) | Stop CDC if replication lag exceeds this. Prevents PostgreSQL disk fill. 0 = disabled. |
+| drop_slot_on_exit | bool | `false` | Drop replication slot on CDC exit. Prevents orphaned WAL accumulation. |
+| health_check_sec | int | `60` | Interval for replication lag health checks (seconds). |
 
 ### sync
 

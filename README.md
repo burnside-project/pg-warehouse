@@ -51,6 +51,9 @@ Wrote 3,209 rows to ./out/customer_features.parquet (428 KB)
 | [Configuration](docs/06-configuration.md) | YAML reference |
 | [Open-Core Strategy](docs/07-open-core.md) | OSS vs. commercial boundary |
 | [Development Workflow](docs/08-development-workflow.md) | SQL pipelines: raw → silver → feat |
+| [Multi-DuckDB Architecture](docs/09-multi-duckdb-architecture.md) | Zero-downtime CDC with three DuckDB files |
+| [Silver Versioning](docs/10-silver-versioning.md) | Versioned silver development: create, compare, promote |
+| [Data Model and AI](docs/11-data-model-and-ai.md) | Semantic layer (YAML) + AI-powered Q&A |
 
 
 ## Why pg-warehouse?
@@ -84,6 +87,7 @@ and export to Parquet or CSV. Everything runs locally, on your machine, with no 
 
 ## What does it solve?
 A local-first Data Warehouse engine that mirrors PostgreSQL data into DuckDB using native PostgreSQL CDC.
+Best for teams that want CDC + SQL transforms + Parquet without standing up Kafka, Spark, or a warehouse
 
 ## How do I do data wrangling?
 Built-in Transformation pipeline using SQL and exports analytics datasets to Parquet.
@@ -106,10 +110,9 @@ pg-warehouse → moves analytics outside Postgres into DuckDB.
 pg-warehouse can runs completely isolated in another node
 https://github.com/burnside-project/pg-warehouse/blob/main/docs/01-architecture.md
 
-## How does it Works?
-pg-warehouse uses a single DuckDB database file with four schemas following Medallion 
-Architecture for lakehouses. RAW,STAGE,SILVER,FEATURE
-https://github.com/burnside-project/pg-warehouse/blob/main/docs/08-development-workflow.md
+## How does it work?
+pg-warehouse follows Medallion Architecture (RAW → SILVER → FEATURE). In single-file mode, all schemas live in one DuckDB file. In multi-file mode, three separate DuckDB files provide zero-downtime CDC with epoch-consistent reads, versioned silver development, and isolated feature exports.
+https://github.com/burnside-project/pg-warehouse/blob/main/docs/09-multi-duckdb-architecture.md
 
 
 ## Install
@@ -120,11 +123,44 @@ $ go install github.com/burnside-project/pg-warehouse/cmd/pg-warehouse@latest
 $ docker run --rm ghcr.io/burnside-project/pg-warehouse sync
 ```
 
+Or build from source:
+
+```bash
+go build -o pg-warehouse ./cmd/pg-warehouse/
+```
+
+## Deployment Layout
+
+pg-warehouse runs from a single working directory. All paths in `pg-warehouse.yml` are relative to this directory.
+
+```
+~/pg-warehouse/                  # Working directory
+├── pg-warehouse                 # Binary
+├── pg-warehouse.yml             # Configuration
+├── warehouse.duckdb             # DuckDB warehouse (created by init)
+├── .pgwh/
+│   └── state.db                 # SQLite state (sync/CDC progress)
+├── sql/
+│   ├── silver/                  # Silver layer SQL transforms
+│   └── feat/                    # Feature layer SQL transforms
+├── out/                         # Parquet/CSV exports
+└── cdc.log                      # CDC log (when running via nohup)
+```
+
+For systemd-managed deployments, the service file should point to this directory:
+
+```ini
+[Service]
+WorkingDirectory=/home/<user>/pg-warehouse
+ExecStart=/home/<user>/pg-warehouse/pg-warehouse cdc start --config pg-warehouse.yml
+```
+
 ## Quickstart (2 minutes)
 
 **1. Initialize** -- creates config, DuckDB warehouse, and state DB:
 
 ```console
+$ mkdir -p ~/pg-warehouse && cd ~/pg-warehouse
 $ pg-warehouse init --pg-url postgres://user:pass@localhost:5432/appdb --duckdb ./warehouse.duckdb
 ```
 
@@ -167,6 +203,9 @@ $ pg-warehouse doctor
 **Analytics**
 - [x] Embedded DuckDB columnar warehouse (Medallion Architecture)
 - [x] SQL pipelines targeting `silver.*` (curated) and `feat.*` (analytics-ready) schemas
+- [x] Multi-DuckDB mode: zero-downtime CDC with epoch-consistent reads
+- [x] Versioned silver development: create, compare, promote, rollback
+- [x] Data model semantic layer (YAML) for AI-powered Q&A
 - [x] Preview query results before export
 - [x] Fast pre-seeding via `COPY TO CSV` + `--from-lsn` (minutes vs. hours)
 
@@ -179,6 +218,22 @@ $ pg-warehouse doctor
 - [x] `doctor` command for config and connectivity validation
 - [x] SQLite state tracking that survives warehouse rebuilds
 - [x] YAML configuration
+
+## E-Commerce Recipe
+
+A complete working example with 14 source tables, Medallion pipeline, data model, Docker dashboard, and AI Q&A:
+
+```bash
+# Run the pipeline
+./examples/ecommerce-recipe/run-pipeline.sh
+
+# Launch the dashboard (with AI Q&A)
+cd examples/ecommerce-recipe/dashboard
+ANTHROPIC_API_KEY=sk-ant-... docker compose up --build
+# Open http://localhost:8050
+```
+
+See [examples/ecommerce-recipe/README.md](examples/ecommerce-recipe/README.md) for full details.
 
 ## Architecture
 

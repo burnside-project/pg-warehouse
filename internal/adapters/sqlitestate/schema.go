@@ -1,7 +1,7 @@
 package sqlitestate
 
 // currentSchemaVersion is the current schema version.
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 // bootstrapSQL contains the DDL to initialize the SQLite state database.
 const bootstrapSQL = `
@@ -94,6 +94,17 @@ CREATE TABLE IF NOT EXISTS lock_state (
     holder_host      TEXT,
     acquired_at      TEXT,
     expires_at       TEXT
+);
+
+-- Epochs (CDC transactional boundaries)
+CREATE TABLE IF NOT EXISTS epochs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    committed_at  TEXT,
+    start_lsn     TEXT,
+    end_lsn       TEXT,
+    row_count     INTEGER NOT NULL DEFAULT 0,
+    status        TEXT    NOT NULL DEFAULT 'open'
 );
 
 -- Schema version tracking

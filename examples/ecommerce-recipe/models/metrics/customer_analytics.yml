@@ -1,0 +1,113 @@
+# ============================================================================
+# Metrics: Customer Analytics
+# Feat table: feat.customer_analytics
+# Grain: one row per customer
+# ============================================================================
+
+name: customer_analytics
+display_name: Customer Analytics Metrics
+description: Customer-level analytics with segmentation, LTV, and activity status
+table: feat.customer_analytics
+grain: one row per customer
+
+dimensions:
+  - name: customer_segment
+    type: text
+    description: "Purchase frequency segment: never_purchased, one_time, occasional, regular, loyal"
+    synonyms: [segment, tier]
+
+  - name: activity_status
+    type: text
+    description: "Recency-based status: active, cooling, at_risk, churned, never_active"
+    synonyms: [activity, status, churn_status]
+
+  - name: signup_cohort
+    type: date
+    description: Month the customer signed up (DATE_TRUNC month of customer_since)
+    synonyms: [cohort, signup_month]
+
+  - name: country
+    type: text
+    description: Customer country
+    synonyms: [region, geography, market]
+
+  - name: state
+    type: text
+    description: Customer state/province
+
+  - name: city
+    type: text
+    description: Customer city
+
+measures:
+  - name: total_orders
+    type: integer
+    description: Lifetime orders per customer
+    aggregation: SUM
+
+  - name: total_items
+    type: integer
+    description: Lifetime items purchased
+    aggregation: SUM
+
+  - name: lifetime_revenue
+    type: numeric
+    description: Lifetime spend
+    aggregation: SUM
+    unit: USD
+    synonyms: [revenue, spend, ltv]
+
+  - name: avg_order_value
+    type: numeric
+    description: Average order value per customer
+    aggregation: AVG
+    unit: USD
+    synonyms: [aov]
+
+  - name: estimated_annual_ltv
+    type: numeric
+    description: Projected annual customer lifetime value
+    aggregation: AVG
+    unit: USD
+    synonyms: [ltv, annual_value]
+
+  - name: days_since_last_order
+    type: integer
+    description: Days since customer's last purchase
+    aggregation: AVG
+    synonyms: [recency, days_inactive]
+
+  - name: customer_lifetime_days
+    type: integer
+    description: Days between first and last purchase
+    aggregation: AVG
+
+  - name: review_count
+    type: integer
+    description: Reviews written by customer
+    aggregation: SUM
+
+  - name: avg_rating_given
+    type: numeric
+    description: Average rating given in reviews
+    aggregation: AVG
+
+derived_metrics:
+  - name: customer_count
+    description: Total number of customers
+    formula: "COUNT(*)"
+
+  - name: churn_rate
+    description: Percentage of customers in churned status
+    formula: "COUNT(CASE WHEN activity_status = 'churned' THEN 1 END) * 100.0 / COUNT(*)"
+    unit: percent
+
+  - name: active_rate
+    description: Percentage of customers in active status
+    formula: "COUNT(CASE WHEN activity_status = 'active' THEN 1 END) * 100.0 / COUNT(*)"
+    unit: percent
+
+  - name: repeat_purchase_rate
+    description: Percentage of customers who ordered more than once
+    formula: "COUNT(CASE WHEN total_orders > 1 THEN 1 END) * 100.0 / NULLIF(COUNT(CASE WHEN total_orders > 0 THEN 1 END), 0)"
+    unit: percent

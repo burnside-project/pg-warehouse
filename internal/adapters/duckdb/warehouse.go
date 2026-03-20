@@ -236,6 +236,69 @@ func (w *Warehouse) MergeStageToRaw(ctx context.Context, stageTable string, rawT
 	return w.ExecuteSQL(ctx, mergeSQL)
 }
 
+// MergeStageToRawForEpoch merges staged data for a specific epoch into the raw table.
+// It handles _deleted tombstones (DELETE from raw WHERE PK matches) and deduplicates
+// non-deleted rows by primary key (keeping the latest rowid per PK).
+// After merging, processed rows are removed from the stage table.
+func (w *Warehouse) MergeStageToRawForEpoch(ctx context.Context, stageTable string, rawTable string, primaryKeys []string, epochID int64) error {
+	quotedRaw := quoteIdentifier(rawTable)
+	quotedStage := quoteIdentifier(stageTable)
+	quotedPKs := make([]string, len(primaryKeys))
+	for i, pk := range primaryKeys {
+		quotedPKs[i] = quoteIdentifier(pk)
+	}
+	pkList := strings.Join(quotedPKs, ", ")
+
+	// Step 1: Handle tombstones — DELETE from raw WHERE PK matches deleted rows in stage
+	deleteTombstoneSQL := fmt.Sprintf(
+		`DELETE FROM %s WHERE (%s) IN (
+			SELECT %s FROM %s WHERE "_epoch" = $1 AND "_deleted" = true
+		)`, quotedRaw, pkList, pkList, quotedStage)
+
+	if _, err := w.db.ExecContext(ctx, deleteTombstoneSQL, epochID); err != nil {
+		return fmt.Errorf("failed to apply tombstones for epoch %d: %w", epochID, err)
+	}
+
+	// Step 2: Dedup non-deleted stage rows — keep latest rowid per PK within this epoch
+	// Then delete matching PKs from raw and insert from stage
+	dedupCTE := fmt.Sprintf(
+		`WITH deduped AS (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY %s ORDER BY rowid DESC) AS _rn
+			FROM %s
+			WHERE "_epoch" = $1 AND ("_deleted" = false OR "_deleted" IS NULL)
+		)`, pkList, quotedStage)
+
+	// Delete matching PKs from raw for rows that will be upserted
+	deleteMatchSQL := fmt.Sprintf(
+		`%s
+		DELETE FROM %s WHERE (%s) IN (
+			SELECT %s FROM deduped WHERE _rn = 1
+		)`, dedupCTE, quotedRaw, pkList, pkList)
+
+	if _, err := w.db.ExecContext(ctx, deleteMatchSQL, epochID); err != nil {
+		return fmt.Errorf("failed to delete matching PKs for epoch %d: %w", epochID, err)
+	}
+
+	// Step 3: Insert deduped non-deleted rows into raw (excluding metadata columns)
+	// Get column list from raw table to know which columns to insert
+	insertSQL := fmt.Sprintf(
+		`%s
+		INSERT INTO %s SELECT * EXCLUDE (_rn, "_epoch", "_deleted") FROM deduped WHERE _rn = 1`,
+		dedupCTE, quotedRaw)
+
+	if _, err := w.db.ExecContext(ctx, insertSQL, epochID); err != nil {
+		return fmt.Errorf("failed to insert deduped rows for epoch %d: %w", epochID, err)
+	}
+
+	// Step 4: Clean up — remove processed epoch rows from stage
+	cleanupSQL := fmt.Sprintf(`DELETE FROM %s WHERE "_epoch" = $1`, quotedStage)
+	if _, err := w.db.ExecContext(ctx, cleanupSQL, epochID); err != nil {
+		return fmt.Errorf("failed to cleanup stage for epoch %d: %w", epochID, err)
+	}
+
+	return nil
+}
+
 // ExportTable exports a warehouse table to a file.
 func (w *Warehouse) ExportTable(ctx context.Context, table string, path string, fileType string) error {
 	quotedTable := quoteIdentifier(table)

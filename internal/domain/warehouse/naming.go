@@ -11,6 +11,12 @@ const (
 	SchemaFeat   = "feat"   // Gold — analytics-ready feature pipeline outputs
 )
 
+// CDC epoch metadata column names injected into stage rows.
+const (
+	ColEpoch   = "_epoch"
+	ColDeleted = "_deleted"
+)
+
 // AllSchemas returns the list of all warehouse schemas.
 func AllSchemas() []string {
 	return []string{SchemaRaw, SchemaStage, SchemaSilver, SchemaFeat}

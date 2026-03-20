@@ -1,0 +1,142 @@
+# ============================================================================
+# Data Model Manifest — E-Commerce Recipe
+#
+# This manifest is the "moat": a machine-readable description of every entity,
+# metric, relationship, and business rule in the analytics warehouse. It serves
+# two purposes:
+#
+#   1. Documentation — humans read it to understand the data model
+#   2. AI Context   — LLMs read it to translate natural language → SQL
+#
+# The AI Q&A engine loads this manifest + entity/metric definitions and uses
+# them as grounding context so it generates accurate, schema-aware queries.
+# ============================================================================
+
+version: "1.0"
+name: ecommerce_analytics
+description: >
+  E-commerce analytics data model built on pg-warehouse's Medallion Architecture.
+  Source data flows from PostgreSQL → raw (bronze) → silver (curated) → feat (gold/analytics).
+  The feat layer is exported to Parquet and serves as the query surface for dashboards and AI Q&A.
+
+engine: duckdb
+query_surface: parquet  # AI queries run against Parquet files via DuckDB
+
+# ── Data Layers ──────────────────────────────────────────────────────────────
+
+layers:
+  raw:
+    description: Mirror of PostgreSQL source tables, written by sync/CDC
+    access: internal
+    tables: 14
+
+  silver:
+    description: Curated, joined, enriched transforms (reads from raw only)
+    access: internal
+    tables:
+      - silver.order_enriched
+      - silver.customer_360
+      - silver.product_catalog
+      - silver.promotion_usage
+
+  feat:
+    description: Analytics-ready aggregations with Parquet export (reads from silver only)
+    access: public  # This is the query surface for AI and dashboards
+    tables:
+      - feat.sales_summary
+      - feat.customer_analytics
+      - feat.product_performance
+      - feat.promotion_effectiveness
+      - feat.inventory_health
+
+# ── Entity Registry ──────────────────────────────────────────────────────────
+
+entities:
+  - file: entities/order.yml
+  - file: entities/customer.yml
+  - file: entities/product.yml
+  - file: entities/promotion.yml
+  - file: entities/inventory.yml
+
+# ── Metric Registry ─────────────────────────────────────────────────────────
+
+metrics:
+  - file: metrics/sales.yml
+  - file: metrics/customer_analytics.yml
+  - file: metrics/product_performance.yml
+  - file: metrics/promotion_effectiveness.yml
+  - file: metrics/inventory_health.yml
+
+# ── Cross-Entity Relationships ───────────────────────────────────────────────
+
+relationships:
+  - name: customer_orders
+    description: A customer places many orders over their lifetime
+    from: { entity: customer, key: customer_id }
+    to: { entity: order, key: customer_id }
+    type: one_to_many
+
+  - name: order_products
+    description: Orders contain products (via order_items and variants)
+    from: { entity: order, key: order_id }
+    to: { entity: product, key: product_id }
+    type: many_to_many
+    through: raw.order_items → raw.product_variants
+
+  - name: product_inventory
+    description: Each product has inventory tracked across variants
+    from: { entity: product, key: product_id }
+    to: { entity: inventory, key: product_id }
+    type: one_to_one
+
+  - name: order_promotions
+    description: Orders can use promotions via coupon redemptions
+    from: { entity: order, key: order_id }
+    to: { entity: promotion, key: promotion_id }
+    type: many_to_many
+    through: raw.coupon_redemptions
+
+# ── Business Rules ───────────────────────────────────────────────────────────
+
+business_rules:
+  - name: revenue_definition
+    description: >
+      Revenue is calculated from order totals (subtotal + tax + shipping).
+      Net revenue subtracts coupon discounts. We do NOT use line item sums
+      for revenue because the order header includes tax and shipping.
+    applies_to: [feat.sales_summary, feat.customer_analytics]
+
+  - name: customer_segmentation
+    description: >
+      Customers are segmented by purchase frequency:
+      never_purchased (0 orders), one_time (1), occasional (2-3),
+      regular (4-10), loyal (11+).
+    applies_to: [feat.customer_analytics]
+
+  - name: activity_status
+    description: >
+      Customer activity is based on days since last order:
+      active (≤30d), cooling (31-90d), at_risk (91-180d), churned (>180d),
+      never_active (no orders).
+    applies_to: [feat.customer_analytics]
+
+  - name: ltv_estimation
+    description: >
+      Estimated annual LTV uses a simple formula:
+      (lifetime_revenue / customer_lifetime_months) * 12.
+      Only applied when customer lifetime exceeds 30 days.
+    applies_to: [feat.customer_analytics]
+
+  - name: stock_status
+    description: >
+      Inventory status: out_of_stock (0 available), low_stock (<10),
+      in_stock (≥10). Reorder signal adds velocity: reorder_urgent
+      (0 available), reorder_soon (<14 days of stock at current velocity).
+    applies_to: [feat.inventory_health, feat.product_performance]
+
+  - name: promotion_reach
+    description: >
+      Promotion reach tiers based on unique customers:
+      high_reach (≥100), medium_reach (20-99), low_reach (1-19),
+      unused (0 redemptions).
+    applies_to: [feat.promotion_effectiveness]

@@ -4,11 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/burnside-project/pg-warehouse/internal/services"
 	"github.com/burnside-project/pg-warehouse/internal/ui"
 	"github.com/spf13/cobra"
 )
+
+// isFeatTarget returns true when the target table belongs to the feat schema.
+func isFeatTarget(table string) bool {
+	return strings.HasPrefix(strings.ToLower(table), "feat.")
+}
 
 var (
 	runSQLFile     string
@@ -34,7 +40,22 @@ var runCmd = &cobra.Command{
 			fileType = app.Cfg.Run.DefaultFileType
 		}
 
-		svc := services.NewRunService(app.WH, app.State, app.Logger)
+		var svc *services.RunService
+		if app.Multi != nil {
+			// Determine target layer from the target table prefix.
+			// feat.* targets run on the feature DB with silver attached.
+			// silver.* / current.* targets run on the silver DB with warehouse attached.
+			switch {
+			case isFeatTarget(runTargetTable):
+				svc = services.NewRunServiceMulti(app.FeatureDB(), app.State, app.Logger,
+					app.Cfg.DuckDB.Silver, "silver")
+			default:
+				svc = services.NewRunServiceMulti(app.SilverDB(), app.State, app.Logger,
+					app.Cfg.DuckDB.Warehouse, "warehouse")
+			}
+		} else {
+			svc = services.NewRunService(app.WH, app.State, app.Logger)
+		}
 		rowCount, err := svc.Run(ctx, runSQLFile, runTargetTable, runOutputPath, fileType)
 		if err != nil {
 			return err

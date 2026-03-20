@@ -1,0 +1,128 @@
+# ============================================================================
+# Entity: Customer
+# Silver table: silver.customer_360
+# Grain: one row per customer
+# ============================================================================
+
+name: customer
+display_name: Customer
+description: >
+  Unified customer profile combining demographics, lifetime order metrics,
+  default shipping address, and review activity.
+table: silver.customer_360
+grain: one row per customer
+primary_key: customer_id
+
+columns:
+  - name: customer_id
+    type: bigint
+    description: Unique customer identifier
+    role: primary_key
+
+  - name: email
+    type: text
+    description: Customer email address
+    pii: true
+
+  - name: customer_name
+    type: text
+    description: Full name
+    pii: true
+    synonyms: [name, full_name]
+
+  - name: last_login
+    type: timestamp
+    description: Most recent login timestamp
+    nullable: true
+
+  - name: customer_since
+    type: timestamp
+    description: Account creation date
+    synonyms: [signup_date, registered_at, created_at]
+
+  # ── Address ────────────────────────────────────────────────────────
+  - name: city
+    type: text
+    description: Default shipping address city
+    nullable: true
+
+  - name: state
+    type: text
+    description: Default shipping address state/province
+    nullable: true
+
+  - name: zip
+    type: text
+    description: Default shipping address postal code
+    nullable: true
+
+  - name: country
+    type: text
+    description: Default shipping address country
+    nullable: true
+    synonyms: [region, geography]
+
+  # ── Order Metrics ──────────────────────────────────────────────────
+  - name: total_orders
+    type: integer
+    description: Lifetime number of orders placed
+    synonyms: [order_count, num_orders]
+
+  - name: total_items
+    type: integer
+    description: Lifetime units purchased
+
+  - name: lifetime_revenue
+    type: numeric
+    description: Sum of all order totals for this customer
+    unit: USD
+    synonyms: [total_spend, ltv, lifetime_value]
+
+  - name: avg_order_value
+    type: numeric
+    description: Average order total across all orders
+    unit: USD
+    synonyms: [aov]
+
+  - name: first_order_date
+    type: timestamp
+    description: Date of the customer's first purchase
+    nullable: true
+
+  - name: last_order_date
+    type: timestamp
+    description: Date of the customer's most recent purchase
+    nullable: true
+    synonyms: [last_purchase]
+
+  # ── Reviews ────────────────────────────────────────────────────────
+  - name: review_count
+    type: integer
+    description: Number of product reviews written
+
+  - name: avg_rating_given
+    type: numeric
+    description: Average star rating across all reviews given
+    nullable: true
+
+  # ── Derived ────────────────────────────────────────────────────────
+  - name: customer_segment
+    type: text
+    description: >
+      Purchase frequency segment: never_purchased (0), one_time (1),
+      occasional (2-3), regular (4-10), loyal (11+)
+    enum: [never_purchased, one_time, occasional, regular, loyal]
+    synonyms: [segment, tier]
+
+  - name: customer_lifetime_days
+    type: integer
+    description: Days between first and last order
+    nullable: true
+
+example_questions:
+  - "How many loyal customers do we have?"
+  - "What is the average lifetime revenue per customer?"
+  - "Which country has the most customers?"
+  - "How many customers have never purchased?"
+  - "Who are the top 10 customers by revenue?"
+  - "What is the average number of reviews per customer?"

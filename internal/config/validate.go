@@ -11,7 +11,18 @@ func Validate(cfg *models.ProjectConfig) error {
 	if cfg.Postgres.URL == "" {
 		return fmt.Errorf("postgres.url is required")
 	}
-	if cfg.DuckDB.Path == "" {
+	if cfg.DuckDB.IsMultiFileMode() {
+		// Multi-file mode: validate all three paths are present.
+		if cfg.DuckDB.Warehouse == "" {
+			return fmt.Errorf("duckdb.warehouse is required in multi-file mode")
+		}
+		if cfg.DuckDB.Silver == "" {
+			return fmt.Errorf("duckdb.silver is required in multi-file mode")
+		}
+		if cfg.DuckDB.Feature == "" {
+			return fmt.Errorf("duckdb.feature is required in multi-file mode")
+		}
+	} else if cfg.DuckDB.Path == "" {
 		return fmt.Errorf("duckdb.path is required")
 	}
 	if len(cfg.Sync.Tables) == 0 {
