@@ -581,18 +581,3 @@ func (s *CDCService) TeardownSlot(ctx context.Context, cfg models.CDCCfg) {
 	}
 }
 
-// buildParameterizedDelete builds a parameterized DELETE statement to prevent SQL injection.
-func buildParameterizedDelete(table string, primaryKeys []string, tuple map[string]any) (string, []any) {
-	var conditions []string
-	var args []any
-	for _, pk := range primaryKeys {
-		if val, exists := tuple[pk]; exists {
-			args = append(args, val)
-			conditions = append(conditions, fmt.Sprintf("%s = $%d", pk, len(args)))
-		}
-	}
-	if len(conditions) == 0 {
-		return "", nil
-	}
-	return fmt.Sprintf("DELETE FROM %s WHERE %s", table, strings.Join(conditions, " AND ")), args
-}

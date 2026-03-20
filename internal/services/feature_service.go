@@ -64,7 +64,7 @@ func (s *FeatureService) Run(ctx context.Context, sqlFile, targetTable, outputPa
 				if detacher, ok := s.feature.(interface {
 					DetachDatabase(ctx context.Context, alias string) error
 				}); ok {
-					detacher.DetachDatabase(ctx, "silver")
+					_ = detacher.DetachDatabase(ctx, "silver")
 				}
 			}()
 		}
@@ -74,7 +74,7 @@ func (s *FeatureService) Run(ctx context.Context, sqlFile, targetTable, outputPa
 	if err := s.feature.ExecuteSQL(ctx, string(content)); err != nil {
 		run.Status = "failed"
 		run.ErrorMessage = err.Error()
-		s.metadata.UpdateFeatureRun(ctx, run)
+		_ = s.metadata.UpdateFeatureRun(ctx, run)
 		return 0, fmt.Errorf("execute SQL: %w", err)
 	}
 
@@ -89,7 +89,7 @@ func (s *FeatureService) Run(ctx context.Context, sqlFile, targetTable, outputPa
 		if err := s.feature.ExportTable(ctx, targetTable, outputPath, outputType); err != nil {
 			run.Status = "failed"
 			run.ErrorMessage = err.Error()
-			s.metadata.UpdateFeatureRun(ctx, run)
+			_ = s.metadata.UpdateFeatureRun(ctx, run)
 			return rowCount, fmt.Errorf("export: %w", err)
 		}
 	}
@@ -99,7 +99,7 @@ func (s *FeatureService) Run(ctx context.Context, sqlFile, targetTable, outputPa
 	run.Status = "success"
 	now := time.Now()
 	run.FinishedAt = &now
-	s.metadata.UpdateFeatureRun(ctx, run)
+	_ = s.metadata.UpdateFeatureRun(ctx, run)
 
 	return rowCount, nil
 }
