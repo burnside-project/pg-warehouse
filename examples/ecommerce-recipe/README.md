@@ -93,7 +93,7 @@ This recipe expects the following e-commerce tables in the source PostgreSQL dat
 
 ## Business Questions
 
-This recipe answers the following analytics questions, organized by dashboard:
+This recipe answers the following analytics questions, organized by dashboard. Each section shows the question, the entities used to derive the answer, and the business logic applied.
 
 ### Sales — *How is the business performing day-over-day?*
 
@@ -104,6 +104,38 @@ This recipe answers the following analytics questions, organized by dashboard:
 | How do customers prefer to pay? | `feat.sales_summary` | Payment Methods (doughnut: credit card / PayPal / bank transfer) |
 | What percentage of orders are delivered? | `feat.sales_summary` | Fulfillment (doughnut: delivered / in-transit / label created) |
 
+<details>
+<summary>Entity lineage and business logic</summary>
+
+**Data flow:**
+```
+raw.orders                    order_total = subtotal + tax + shipping
+  + raw.order_items           qty, unit_price, line_total
+  + raw.payments              method, status (latest per order via DISTINCT ON)
+  + raw.shipments             carrier, status (latest per order via DISTINCT ON)
+  + raw.coupon_redemptions    discount_amount (aggregated per order)
+      |
+silver.order_enriched         ONE ROW PER ORDER, all dimensions joined
+      |
+feat.sales_summary            ONE ROW PER DAY, aggregated KPIs
+```
+
+**Entities involved:**
+
+| Entity | What it provides | Join path |
+|--------|-----------------|-----------|
+| `orders` | Revenue (`total`), order date, status | Primary grain |
+| `order_items` | Unit count, line-level detail | `orders.id = order_items.order_id` |
+| `payments` | Payment method, success/failure | `orders.id = payments.order_id` (latest per order) |
+| `shipments` | Fulfillment status, carrier, delivery time | `orders.id = shipments.order_id` (latest per order) |
+| `coupon_redemptions` | Discount amount per order | `orders.id = coupon_redemptions.order_id` |
+
+**Business rule — Revenue definition:** Revenue uses `orders.total` (subtotal + tax + shipping), NOT `SUM(order_items.line_total)`. The order header includes tax and shipping which line items do not. Net revenue = gross revenue minus coupon discounts.
+
+**Key transformation:** Payments and shipments are one-to-many (multiple payment attempts, multiple shipment legs). Silver uses `DISTINCT ON (order_id) ORDER BY created_at DESC` to pick the latest record, collapsing to one row per order.
+
+</details>
+
 ### Customers — *Who are our customers and how engaged are they?*
 
 | Question | Feature Table | Dashboard Tile |
@@ -113,12 +145,114 @@ This recipe answers the following analytics questions, organized by dashboard:
 | Who are our most valuable customers? | `feat.customer_analytics` | Top Customers (table: name, segment, revenue, LTV) |
 | Which signup months produce the highest-value customers? | `feat.customer_analytics` | Signup Cohorts (bar chart: avg revenue + count per cohort) |
 
+<details>
+<summary>Entity lineage and business logic</summary>
+
+**Data flow:**
+```
+raw.customers                 email, name, signup date
+  + raw.orders                order history per customer
+    + raw.order_items         item-level detail for lifetime metrics
+  + raw.addresses             default shipping address (is_default DESC, latest)
+  + raw.reviews               review count, avg rating given
+      |
+silver.customer_360           ONE ROW PER CUSTOMER
+      |
+feat.customer_analytics       ONE ROW PER CUSTOMER + derived segments, LTV, activity
+```
+
+**Entities involved:**
+
+| Entity | What it provides | Why it matters |
+|--------|-----------------|----------------|
+| `customers` | Identity, signup date | Cohort analysis (signup month), customer lifetime |
+| `orders` | Order count, first/last order date, order totals | Segmentation, LTV, recency |
+| `order_items` | Item-level quantity | Total items purchased (engagement depth) |
+| `addresses` | City, state, country | Geographic breakdown (`addr_type='shipping'`, `is_default DESC`) |
+| `reviews` | Review count, avg rating given | Engagement proxy — reviewers are more engaged |
+
+**Business rule — Customer segmentation** (by purchase frequency):
+```
+0 orders   = "never_purchased"
+1 order    = "one_time"
+2-3 orders = "occasional"
+4-10       = "regular"
+11+        = "loyal"
+```
+
+**Business rule — Activity status** (by recency):
+```
+last order <= 30 days ago   = "active"
+31-90 days                  = "cooling"
+91-180 days                 = "at_risk"
+> 180 days                  = "churned"
+no orders                   = "never_active"
+```
+
+**Business rule — LTV estimation:**
+```
+IF customer_lifetime > 30 days:
+    estimated_annual_ltv = (lifetime_revenue / lifetime_months) * 12
+ELSE:
+    estimated_annual_ltv = lifetime_revenue   (not enough data to extrapolate)
+```
+
+This is a simple LTV — it does not account for churn probability or discount rates.
+
+</details>
+
 ### Products — *Which products drive the most revenue?*
 
 | Question | Feature Table | Dashboard Tile |
 |----------|---------------|----------------|
 | What are our best sellers? | `feat.product_performance` | Top Products (table: rank, name, orders, units, revenue, rating) |
 | Which categories generate the most revenue? | `feat.product_performance` | Revenue by Category (horizontal bar chart) |
+
+<details>
+<summary>Entity lineage and business logic</summary>
+
+**Data flow:**
+```
+raw.products                  name, base_price, status
+  + raw.product_variants      SKUs, price overrides, weight
+  + raw.categories            category hierarchy (self-referencing via parent_id)
+  + raw.inventory             qty_available, qty_reserved (per variant per warehouse)
+  + raw.price_history         historical price changes (per variant)
+  + raw.reviews               ratings, review text
+      |
+silver.product_catalog        ONE ROW PER PRODUCT (catalog + inventory + reviews)
+      |
+  + raw.order_items           sales data (variant_id -> product_id via product_variants)
+  + silver.order_enriched     confirms order is valid
+      |
+feat.product_performance      ONE ROW PER PRODUCT + sales rankings
+```
+
+**Entities involved:**
+
+| Entity | What it provides | Indirection |
+|--------|-----------------|-------------|
+| `products` | Name, base price, status | Direct |
+| `product_variants` | SKU, price override, weight | `products.id = product_variants.product_id` |
+| `categories` | Category name, hierarchy | `products.category_id = categories.id` |
+| `inventory` | Stock levels per variant per warehouse | `product_variants.id = inventory.variant_id` |
+| `price_history` | Price change count, last change date | `product_variants.id = price_history.variant_id` |
+| `reviews` | Rating, review count | `products.id = reviews.product_id` |
+| `order_items` | Units sold, revenue | `product_variants.id = order_items.variant_id` |
+
+**Key indirection:** Orders contain `variant_id`, not `product_id`. A single product ("Blue T-Shirt") has multiple variants (Small, Medium, Large). To get product-level revenue:
+```
+order_items.variant_id
+    -> product_variants.id -> product_variants.product_id
+    -> products.id
+```
+
+**Rankings:** Products are ranked three ways using `RANK() OVER`:
+- `revenue_rank` — by total revenue (descending)
+- `volume_rank` — by units sold (descending)
+- `rating_rank` — by average rating (descending)
+
+</details>
 
 ### Promotions — *Which promotions are most effective?*
 
@@ -128,12 +262,151 @@ This recipe answers the following analytics questions, organized by dashboard:
 | Where is the discount budget going? | `feat.promotion_effectiveness` | Discount by Reach (bar chart) |
 | What is the ROI per promotion code? | `feat.promotion_effectiveness` | Promotion Details (table: code, redemptions, discount given, avg order) |
 
+<details>
+<summary>Entity lineage and business logic</summary>
+
+**Data flow:**
+```
+raw.promotions                code, type (percentage/fixed), value, limits, dates
+  + raw.coupon_redemptions    per-use: promotion_id, order_id, customer_id, discount_amount
+    + raw.orders              order total (measures impact on basket size)
+      |
+silver.promotion_usage        ONE ROW PER PROMOTION + redemption aggregates
+      |
+feat.promotion_effectiveness  ONE ROW PER PROMOTION + derived reach/utilization
+```
+
+**Entities involved:**
+
+| Entity | What it provides | Why it matters |
+|--------|-----------------|----------------|
+| `promotions` | Code, type, value, limits, start/end dates | Promotion definition and constraints |
+| `coupon_redemptions` | Per-use: discount amount, customer, order | Redemption count, unique customers, total discount |
+| `orders` | Order total for orders using the promo | Measures if promos drive larger baskets |
+
+**Business rule — Promotion reach tiers** (by unique customers):
+```
+>= 100 customers  = "high_reach"
+20-99              = "medium_reach"
+1-19               = "low_reach"
+0                  = "unused"
+```
+
+**Business rule — Utilization:**
+```
+utilization_pct = current_uses / max_uses * 100
+NULL max_uses (unlimited) -> utilization_pct = NULL
+```
+
+**Business rule — Promotion status:**
+```
+end_date passed              = "expired"
+max_uses reached             = "exhausted"
+start_date in future         = "scheduled"
+otherwise                    = "active"
+```
+
+</details>
+
 ### Inventory — *Which products need restocking?*
 
 | Question | Feature Table | Dashboard Tile |
 |----------|---------------|----------------|
 | What is the overall inventory health distribution? | `feat.inventory_health` | Stock Health (bar chart: healthy / reorder soon / reorder urgent) |
 | Which products need immediate restocking? | `feat.inventory_health` | Reorder Alerts (table: product, available, velocity, days-of-stock) |
+
+<details>
+<summary>Entity lineage and business logic</summary>
+
+**Data flow:**
+```
+silver.product_catalog        stock levels (total_available, total_reserved)
+  + raw.order_items           recent sales velocity (last 30 days)
+    + raw.product_variants    variant_id -> product_id mapping
+    + raw.orders              placed_at filter for 30-day window
+      |
+feat.inventory_health         ONE ROW PER ACTIVE PRODUCT + reorder signals
+```
+
+**Entities involved:**
+
+| Entity | What it provides | Time dimension |
+|--------|-----------------|----------------|
+| `products` | Product identity, status filter (active only) | Static |
+| `product_variants` | Variant-to-product mapping | Static |
+| `inventory` | qty_available, qty_reserved per variant per warehouse | Current snapshot |
+| `order_items` | Sales quantity per variant | Last 30 days (rolling window) |
+| `orders` | Order date for 30-day filter | Last 30 days |
+
+**Business rule — Sales velocity:**
+```
+units_sold_last_30d = SUM(order_items.qty)
+    WHERE orders.placed_at >= CURRENT_DATE - 30 days
+    joined via product_variants to get product_id
+```
+
+**Business rule — Days of stock remaining:**
+```
+IF units_sold_last_30d > 0:
+    estimated_days_of_stock = net_available * 30 / units_sold_last_30d
+ELSE:
+    NULL   (no sales velocity, can't estimate)
+```
+
+**Business rule — Reorder signal:**
+```
+available = 0                          = "reorder_urgent"
+available < 10 OR days_of_stock < 14   = "reorder_soon"
+otherwise                              = "healthy"
+```
+
+</details>
+
+## Entity Relationship Map
+
+```
+                    +----------+
+                    |categories|
+                    +----+-----+
+                         | (parent_id -> self)
+                         |
++----------+        +----+-----+        +--------------+
+| reviews  +------->| products |<-------+price_history |
++------+---+        +----+-----+        +--------------+
+       |                 |                      ^
+       |            +----+----------+           |
+       |            |product_variants+-----------+
+       |            +----+----------+
+       |                 |
+       |            +----+-----+
+       |            |inventory |
+       |            +----------+
+       |                 ^
+       |                 | (variant_id)
+       v                 |
++----------+        +----+------+        +----------+
+|customers |<-------+order_items+------->|  orders  |
++------+---+        +-----------+        +----+-----+
+       |                                      |
+       |            +-----------+             |
+       +----------->| addresses |<------------+
+       |            +-----------+             |
+       |                                      |
+       |            +-----------+             |
+       +----------->|coupon_    |<------------+
+       |            |redemptions|             |
+       |            +-----+-----+             |
+       |                  |                   |
+       |            +-----+-----+        +----+-----+
+       |            |promotions |        |payments  |
+       |            +-----------+        +----------+
+       |                                      |
+       |                                 +----+-----+
+       |                                 |shipments |
+       |                                 +----------+
+
+  14 raw tables -> 4 silver tables -> 5 feat tables -> 5 dashboard tabs + AI Q&A
+```
 
 ## Pipeline: Schema Mapping
 
