@@ -416,60 +416,82 @@ pg-warehouse inspect schema raw.orders   # Describe a table
 pg-warehouse inspect sync-state          # Show sync state
 ```
 
-### How to Run Feature SQL in pg-warehouse ?
+### How to run the pipeline in pg-warehouse?
 
 ```bash
-# Silver layer: curated intermediate transforms
-pg-warehouse run \
-  --sql-file ./sql/silver/order_enriched.sql \
-  --target-table silver.order_enriched
+# Refresh v0 from raw.duckdb (snapshot + full copy, CDC keeps running)
+pg-warehouse run --refresh
 
-# Gold layer: analytics-ready features with export
-pg-warehouse run \
-  --sql-file ./sql/feat/customer_features.sql \
-  --target-table feat.customer_features \
-  --output ./out/customer_features.parquet \
-  --file-type parquet
+# Run a single silver transform (reads from v0.*, writes to v1.*)
+pg-warehouse run --sql-file ./sql/silver/v1/001_order_enriched.sql
+
+# Run all silver + feature SQL in numeric order (001.sql, 002.sql...)
+pg-warehouse run --pipeline
+
+# Promote current version (swaps current.* views)
+pg-warehouse run --promote
+
+# Production: refresh + pipeline + promote in one command
+pg-warehouse run --refresh --pipeline --promote
 ```
 
-> For a complete walkthrough of building SQL pipelines (silver and feat layers), naming conventions, and the CDC pause/resume pattern, see [Development Workflow](08-development-workflow.md).
+> SQL files use numeric prefixes (001_, 002_) to determine execution order. The `--pipeline` flag discovers, sorts, and runs them sequentially. See [Silver Versioning](10-silver-versioning.md) and [Multi-DuckDB Architecture](09-multi-duckdb-architecture.md) for the full workflow.
 
-### How to Preview and Export from pg-warehouse ?
+### How to develop silver SQL in pg-warehouse?
 
 ```bash
-# Preview query results
-pg-warehouse preview --sql-file ./sql/query.sql --limit 10
+# 1. Get fresh data (once per session)
+pg-warehouse run --refresh
 
-# Export a table
-pg-warehouse export \
-  --table feat.customer_features \
-  --output ./out/export.csv \
-  --file-type csv
+# 2. Iterate on silver SQL (v0 is frozen, fast iteration)
+pg-warehouse run --sql-file ./sql/silver/v1/002_customer_360.sql
+# tweak SQL, re-run, check results...
+
+# 3. Preview results
+pg-warehouse preview --sql-file ./sql/silver/v1/002_customer_360.sql --limit 10
+
+# 4. Run full pipeline and promote
+pg-warehouse run --pipeline --promote
 ```
 
 ### How to manage Silver versions in pg-warehouse?
 
-> Requires multi-file mode (`duckdb.warehouse` set in config). See [Silver Versioning](10-silver-versioning.md).
+See [Silver Versioning](10-silver-versioning.md).
 
 ```bash
 # Create a new version
 pg-warehouse silver create-version --label "add shipping address"
 
-# Build transforms targeting the new version
-pg-warehouse run --sql-file ./sql/silver/v2/001_order_enriched.sql \
-  --target-table v2.order_enriched
+# Build transforms for v2 (reads from v0.*, writes to v2.*)
+pg-warehouse run --sql-file ./sql/silver/v2/001_order_enriched.sql
 
 # Compare versions
 pg-warehouse silver compare --base v1 --candidate v2
 
-# Promote to production (swaps current.* views)
-pg-warehouse silver promote --version 2
+# Promote v2 to production (swaps current.* views)
+pg-warehouse run --promote --version 2
 
 # List all versions
 pg-warehouse silver list-versions
 
 # Drop an archived version
 pg-warehouse silver drop-version --version 1
+```
+
+### How to export from pg-warehouse?
+
+```bash
+# Export a table to Parquet
+pg-warehouse export \
+  --table feat.sales_summary \
+  --output ./out/sales_summary.parquet \
+  --file-type parquet
+
+# Export to CSV
+pg-warehouse export \
+  --table feat.customer_analytics \
+  --output ./out/customers.csv \
+  --file-type csv
 ```
 
 ### How to inspect CDC epochs in pg-warehouse?
@@ -509,19 +531,18 @@ postgres:
   query_timeout: 120s                  # Max query execution time (default: 30s)
 
 # ──────────────────────────────────────────────────────────────────────
-# DuckDB Warehouse
+# DuckDB Files (Medallion Architecture)
 # ──────────────────────────────────────────────────────────────────────
-# Single embedded database file containing four schemas (Medallion Architecture):
-#   raw.*    — Bronze: mirrored source tables (written by sync and CDC)
-#   stage.*  — Internal: temporary merge buffer for incremental sync (auto-managed)
-#   silver.* — Silver: user curated/transformed intermediate tables
-#   feat.*   — Gold: analytics-ready feature pipeline outputs (written by 'run' command)
+# Three separate DuckDB files. CDC writes to raw.duckdb continuously.
+# Pipeline reads from raw via --refresh, writes to silver and feature.
+#
+#   raw.duckdb     — CDC black box: stage.* (merge buffer) + raw.* (deduped)
+#   silver.duckdb  — Dev platform: v0.* (raw copy) + v1.* (transforms) + current.*
+#   feature.duckdb — Analytics: v0.* (silver copy) + v1.* (aggregations) + current.*
 duckdb:
-  path: ./warehouse.duckdb            # Single-file mode: all schemas in one file
-  # Multi-file mode (zero-downtime CDC, see docs/09-multi-duckdb-architecture.md):
-  # warehouse: ./warehouse.duckdb     # CDC black box (raw.*, stage.*)
-  # silver: ./silver.duckdb           # Development platform (versioned silver schemas)
-  # feature: ./feature.duckdb         # Analytics output (feat.*)
+  raw: ./raw.duckdb                  # CDC black box (deduped PostgreSQL mirror)
+  silver: ./silver.duckdb            # Development platform (v0 + versioned transforms)
+  feature: ./feature.duckdb          # Analytics output (v0 + aggregations + Parquet)
 
 # ──────────────────────────────────────────────────────────────────────
 # State Database

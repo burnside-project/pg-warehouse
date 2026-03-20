@@ -41,6 +41,15 @@ func (a *App) SilverDB() *duckdb.Warehouse {
 	return a.WH
 }
 
+// RawDB returns the raw CDC warehouse. In multi-file mode it returns
+// the dedicated warehouse instance; otherwise it returns the single WH.
+func (a *App) RawDB() *duckdb.Warehouse {
+	if a.Multi != nil {
+		return a.Multi.Warehouse() // Warehouse() in multidb.go returns the raw db
+	}
+	return a.WH
+}
+
 // FeatureDB returns the feature analytics output warehouse.
 // In single-file mode it returns the single WH (all schemas colocated).
 func (a *App) FeatureDB() *duckdb.Warehouse {
@@ -92,7 +101,7 @@ func buildApp(ctx context.Context, cfg *models.ProjectConfig, loader *fileconfig
 	}
 
 	if cfg.DuckDB.IsMultiFileMode() {
-		multi := duckdb.NewMultiDB(cfg.DuckDB.Warehouse, cfg.DuckDB.Silver, cfg.DuckDB.Feature)
+		multi := duckdb.NewMultiDB(cfg.DuckDB.Raw, cfg.DuckDB.Silver, cfg.DuckDB.Feature)
 		if err := multi.OpenAll(ctx); err != nil {
 			return nil, fmt.Errorf("failed to open multi-db: %w", err)
 		}

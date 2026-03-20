@@ -48,16 +48,16 @@ type CDCCfg struct {
 
 // DuckDBCfg holds DuckDB settings.
 type DuckDBCfg struct {
-	Path      string `yaml:"path"`      // Legacy single-file mode
-	Warehouse string `yaml:"warehouse"` // Multi-file: CDC black box
-	Silver    string `yaml:"silver"`    // Multi-file: development platform
-	Feature   string `yaml:"feature"`   // Multi-file: analytics output
+	Path    string `yaml:"path"`    // Legacy single-file mode
+	Raw     string `yaml:"raw"`     // Multi-file: CDC black box (raw.duckdb)
+	Silver  string `yaml:"silver"`  // Multi-file: development platform (silver.duckdb)
+	Feature string `yaml:"feature"` // Multi-file: analytics output (feature.duckdb)
 }
 
-// IsMultiFileMode returns true when the warehouse field is set,
+// IsMultiFileMode returns true when the raw field is set,
 // indicating that three separate DuckDB files should be used.
 func (d DuckDBCfg) IsMultiFileMode() bool {
-	return d.Warehouse != ""
+	return d.Raw != ""
 }
 
 // SyncCfg holds sync configuration.

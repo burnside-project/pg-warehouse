@@ -13,6 +13,7 @@ CREATE SCHEMA IF NOT EXISTS feat;
 
 // silverBootstrapSQL initialises the silver development platform database.
 const silverBootstrapSQL = `
+CREATE SCHEMA IF NOT EXISTS v0;
 CREATE SCHEMA IF NOT EXISTS current;
 CREATE SCHEMA IF NOT EXISTS _meta;
 CREATE TABLE IF NOT EXISTS _meta.versions (
@@ -24,11 +25,40 @@ CREATE TABLE IF NOT EXISTS _meta.versions (
     created_at  TIMESTAMP DEFAULT current_timestamp,
     promoted_at TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS _meta.refresh_log (
+    id           INTEGER PRIMARY KEY,
+    refreshed_at TIMESTAMP DEFAULT current_timestamp,
+    source       TEXT,
+    epoch_id     INTEGER,
+    tables       INTEGER,
+    total_rows   BIGINT,
+    duration_ms  INTEGER
+);
 `
 
 // featureBootstrapSQL initialises the feature analytics output database.
 const featureBootstrapSQL = `
-CREATE SCHEMA IF NOT EXISTS feat;
+CREATE SCHEMA IF NOT EXISTS v0;
+CREATE SCHEMA IF NOT EXISTS current;
+CREATE SCHEMA IF NOT EXISTS _meta;
+CREATE TABLE IF NOT EXISTS _meta.versions (
+    version     INTEGER PRIMARY KEY,
+    label       TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'active',
+    epoch_id    INTEGER,
+    description TEXT,
+    created_at  TIMESTAMP DEFAULT current_timestamp,
+    promoted_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS _meta.refresh_log (
+    id           INTEGER PRIMARY KEY,
+    refreshed_at TIMESTAMP DEFAULT current_timestamp,
+    source       TEXT,
+    epoch_id     INTEGER,
+    tables       INTEGER,
+    total_rows   BIGINT,
+    duration_ms  INTEGER
+);
 `
 
 // BootstrapSilver creates schemas and metadata tables for the silver database.

@@ -13,8 +13,8 @@ func Validate(cfg *models.ProjectConfig) error {
 	}
 	if cfg.DuckDB.IsMultiFileMode() {
 		// Multi-file mode: validate all three paths are present.
-		if cfg.DuckDB.Warehouse == "" {
-			return fmt.Errorf("duckdb.warehouse is required in multi-file mode")
+		if cfg.DuckDB.Raw == "" {
+			return fmt.Errorf("duckdb.raw is required in multi-file mode")
 		}
 		if cfg.DuckDB.Silver == "" {
 			return fmt.Errorf("duckdb.silver is required in multi-file mode")

@@ -81,11 +81,11 @@ logging:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| warehouse | string | — | CDC black box: raw.* + stage.* (CDC-owned, exclusive writer) |
-| silver | string | — | Development platform: versioned silver schemas (pipeline-owned) |
-| feature | string | — | Analytics output: feat.* tables + Parquet export (pipeline-owned) |
+| raw | string | — | `raw.duckdb` — CDC black box: deduped PostgreSQL mirror (CDC-owned) |
+| silver | string | — | `silver.duckdb` — Development platform: v0 (raw copy) + versioned transforms (pipeline-owned) |
+| feature | string | — | `feature.duckdb` — Analytics output: v0 (silver copy) + aggregations + Parquet export (pipeline-owned) |
 
-Use either `path` (single-file) or `warehouse`/`silver`/`feature` (multi-file). If `warehouse` is set, multi-file mode is activated.
+Use either `path` (single-file) or `raw`/`silver`/`feature` (multi-file). If `raw` is set, multi-file mode is activated.
 
 ### state
 
