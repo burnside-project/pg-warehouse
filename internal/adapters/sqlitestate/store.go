@@ -442,6 +442,119 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	return version, nil
 }
 
+// --- Epoch methods ---
+
+// OpenEpoch inserts a new epoch with status 'open' and returns it.
+func (s *Store) OpenEpoch(ctx context.Context) (*models.Epoch, error) {
+	result, err := s.db.ExecContext(ctx,
+		`INSERT INTO epochs (status) VALUES ('open')`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open epoch: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get epoch id: %w", err)
+	}
+
+	// Read back the full row
+	var epoch models.Epoch
+	var startedAt string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT id, started_at, start_lsn, end_lsn, row_count, status FROM epochs WHERE id = ?`, id).
+		Scan(&epoch.ID, &startedAt, &epoch.StartLSN, &epoch.EndLSN, &epoch.RowCount, &epoch.Status)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read back epoch: %w", err)
+	}
+	epoch.StartedAt, _ = time.Parse("2006-01-02 15:04:05", startedAt)
+	return &epoch, nil
+}
+
+// CommitEpoch marks an epoch as committed with the given end LSN and row count.
+func (s *Store) CommitEpoch(ctx context.Context, epochID int64, endLSN string, rowCount int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE epochs SET status = 'committed', committed_at = datetime('now'), end_lsn = ?, row_count = ? WHERE id = ?`,
+		endLSN, rowCount, epochID)
+	if err != nil {
+		return fmt.Errorf("failed to commit epoch %d: %w", epochID, err)
+	}
+	return nil
+}
+
+// MarkEpochMerged marks an epoch as merged.
+func (s *Store) MarkEpochMerged(ctx context.Context, epochID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE epochs SET status = 'merged' WHERE id = ?`, epochID)
+	if err != nil {
+		return fmt.Errorf("failed to mark epoch %d as merged: %w", epochID, err)
+	}
+	return nil
+}
+
+// GetOpenEpoch returns the most recent open epoch, or nil if none exists.
+func (s *Store) GetOpenEpoch(ctx context.Context) (*models.Epoch, error) {
+	var epoch models.Epoch
+	var startedAt string
+	var committedAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, started_at, committed_at, start_lsn, end_lsn, row_count, status
+		 FROM epochs WHERE status = 'open' ORDER BY id DESC LIMIT 1`).
+		Scan(&epoch.ID, &startedAt, &committedAt, &epoch.StartLSN, &epoch.EndLSN, &epoch.RowCount, &epoch.Status)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get open epoch: %w", err)
+	}
+	epoch.StartedAt, _ = time.Parse("2006-01-02 15:04:05", startedAt)
+	epoch.CommittedAt = parseNullTimePtr(committedAt)
+	return &epoch, nil
+}
+
+// GetCommittedEpochs returns all committed epochs ordered by id ascending.
+func (s *Store) GetCommittedEpochs(ctx context.Context) ([]models.Epoch, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, started_at, committed_at, start_lsn, end_lsn, row_count, status
+		 FROM epochs WHERE status = 'committed' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get committed epochs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var epochs []models.Epoch
+	for rows.Next() {
+		var epoch models.Epoch
+		var startedAt string
+		var committedAt sql.NullString
+		if err := rows.Scan(&epoch.ID, &startedAt, &committedAt, &epoch.StartLSN, &epoch.EndLSN, &epoch.RowCount, &epoch.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan epoch: %w", err)
+		}
+		epoch.StartedAt, _ = time.Parse("2006-01-02 15:04:05", startedAt)
+		epoch.CommittedAt = parseNullTimePtr(committedAt)
+		epochs = append(epochs, epoch)
+	}
+	return epochs, rows.Err()
+}
+
+// GetLatestMergedEpoch returns the most recently merged epoch, or nil if none exists.
+func (s *Store) GetLatestMergedEpoch(ctx context.Context) (*models.Epoch, error) {
+	var epoch models.Epoch
+	var startedAt string
+	var committedAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, started_at, committed_at, start_lsn, end_lsn, row_count, status
+		 FROM epochs WHERE status = 'merged' ORDER BY id DESC LIMIT 1`).
+		Scan(&epoch.ID, &startedAt, &committedAt, &epoch.StartLSN, &epoch.EndLSN, &epoch.RowCount, &epoch.Status)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest merged epoch: %w", err)
+	}
+	epoch.StartedAt, _ = time.Parse("2006-01-02 15:04:05", startedAt)
+	epoch.CommittedAt = parseNullTimePtr(committedAt)
+	return &epoch, nil
+}
+
 // --- Helpers ---
 
 func formatTime(t *time.Time) interface{} {
@@ -449,6 +562,20 @@ func formatTime(t *time.Time) interface{} {
 		return nil
 	}
 	return t.Format(time.RFC3339)
+}
+
+func parseNullTimePtr(s sql.NullString) *time.Time {
+	if !s.Valid || s.String == "" {
+		return nil
+	}
+	t, err := time.Parse("2006-01-02 15:04:05", s.String)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, s.String)
+		if err != nil {
+			return nil
+		}
+	}
+	return &t
 }
 
 func parseNullTime(s sql.NullString) *time.Time {

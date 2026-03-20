@@ -1,6 +1,10 @@
 package config
 
-import "github.com/burnside-project/pg-warehouse/internal/models"
+import (
+	"path/filepath"
+
+	"github.com/burnside-project/pg-warehouse/internal/models"
+)
 
 // DefaultBatchSize is the default number of rows per sync batch.
 const DefaultBatchSize = 50000
@@ -65,6 +69,18 @@ func ApplyDefaults(cfg *models.ProjectConfig) {
 	if cfg.CDC.SlotName == "" {
 		cfg.CDC.SlotName = DefaultSlotName
 	}
+	if cfg.CDC.EpochIntervalSec == 0 {
+		cfg.CDC.EpochIntervalSec = 60
+	}
+	if cfg.CDC.EpochMaxRows == 0 {
+		cfg.CDC.EpochMaxRows = 10000
+	}
+	if cfg.CDC.MaxLagBytes == 0 {
+		cfg.CDC.MaxLagBytes = 5 * 1024 * 1024 * 1024 // 5GB default
+	}
+	if cfg.CDC.HealthCheckSec == 0 {
+		cfg.CDC.HealthCheckSec = 60
+	}
 
 	// Cap max_conns at 5 per configuration contract (06-configuration.md)
 	if cfg.Postgres.MaxConns > 5 {
@@ -75,6 +91,17 @@ func ApplyDefaults(cfg *models.ProjectConfig) {
 	for i := range cfg.Sync.Tables {
 		if cfg.Sync.Tables[i].TargetSchema == "" {
 			cfg.Sync.Tables[i].TargetSchema = "raw"
+		}
+	}
+
+	// Multi-file DuckDB defaults: derive silver/feature paths from warehouse dir.
+	if cfg.DuckDB.IsMultiFileMode() {
+		dir := filepath.Dir(cfg.DuckDB.Warehouse)
+		if cfg.DuckDB.Silver == "" {
+			cfg.DuckDB.Silver = filepath.Join(dir, "silver.duckdb")
+		}
+		if cfg.DuckDB.Feature == "" {
+			cfg.DuckDB.Feature = filepath.Join(dir, "feature.duckdb")
 		}
 	}
 }

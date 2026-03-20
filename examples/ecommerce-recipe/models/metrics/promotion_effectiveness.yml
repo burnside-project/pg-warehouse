@@ -1,0 +1,77 @@
+# ============================================================================
+# Metrics: Promotion Effectiveness
+# Feat table: feat.promotion_effectiveness
+# Grain: one row per promotion
+# ============================================================================
+
+name: promotion_effectiveness
+display_name: Promotion Effectiveness Metrics
+description: Promotion ROI, utilization, and customer reach analysis
+table: feat.promotion_effectiveness
+grain: one row per promotion
+
+dimensions:
+  - name: promo_type
+    type: text
+    description: Discount type (percentage, fixed_amount, free_shipping, buy_x_get_y)
+    synonyms: [type, discount_type]
+
+  - name: promo_status
+    type: text
+    description: "Current status: active, expired, exhausted, scheduled"
+    synonyms: [status]
+
+  - name: reach_tier
+    type: text
+    description: "Customer reach classification: high_reach (100+), medium_reach (20-99), low_reach (1-19), unused"
+    synonyms: [reach, tier]
+
+measures:
+  - name: redemption_count
+    type: integer
+    description: Total redemptions
+    aggregation: SUM
+    synonyms: [redemptions, uses]
+
+  - name: unique_customers
+    type: integer
+    description: Distinct customers who redeemed
+    aggregation: SUM
+    synonyms: [customer_reach, customers]
+
+  - name: total_discount_given
+    type: numeric
+    description: Total discount amount given
+    aggregation: SUM
+    unit: USD
+    synonyms: [discount_spend, total_discount]
+
+  - name: avg_discount_per_use
+    type: numeric
+    description: Average discount per redemption
+    aggregation: AVG
+    unit: USD
+
+  - name: avg_order_total_with_coupon
+    type: numeric
+    description: Average order total when this promo is used
+    aggregation: AVG
+    unit: USD
+
+  - name: utilization_pct
+    type: numeric
+    description: Percentage of max_uses consumed
+    aggregation: AVG
+    unit: percent
+    synonyms: [utilization, usage_rate]
+
+  - name: campaign_duration_days
+    type: integer
+    description: Days between promotion start and end
+    aggregation: AVG
+
+derived_metrics:
+  - name: discount_per_customer
+    description: Average discount per unique customer reached
+    formula: "total_discount_given / NULLIF(unique_customers, 0)"
+    unit: USD

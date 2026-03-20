@@ -35,11 +35,15 @@ sql/
 ├── silver/
 │   ├── 001_order_enriched.sql
 │   ├── 002_customer_360.sql
-│   └── 003_product_catalog.sql
+│   ├── 003_product_catalog.sql
+│   ├── 004_promotion_usage.sql
+│   └── 005_product_sales.sql
 ├── feat/
 │   ├── 001_sales_summary.sql
 │   ├── 002_customer_analytics.sql
-│   └── 003_product_performance.sql
+│   ├── 003_product_performance.sql
+│   ├── 004_promotion_effectiveness.sql
+│   └── 005_inventory_health.sql
 ```
 
 **Rules:**
@@ -192,28 +196,30 @@ make pipeline-status   # Show recent runs from SQLite state
 
 ### Manual Steps
 
-If you prefer running individual files:
+All commands run from the pg-warehouse working directory (`~/pg-warehouse/`):
 
 ```bash
+cd ~/pg-warehouse
+
 # 1. Stop CDC
 kill -SIGINT $(pgrep -f 'pg-warehouse cdc')
 sleep 5
 sqlite3 .pgwh/state.db 'DELETE FROM lock_state;'
 
 # 2. Run a silver table
-pg-warehouse run \
+./pg-warehouse run \
     --sql-file ./sql/silver/001_order_enriched.sql \
     --target-table silver.order_enriched
 
 # 3. Run a feat table with export
-pg-warehouse run \
+./pg-warehouse run \
     --sql-file ./sql/feat/001_sales_summary.sql \
     --target-table feat.sales_summary \
     --output ./out/sales_summary.parquet \
     --file-type parquet
 
 # 4. Restart CDC
-nohup pg-warehouse cdc start --config pg-warehouse.yml > cdc.log 2>&1 &
+nohup ./pg-warehouse cdc start --config pg-warehouse.yml > cdc.log 2>&1 &
 ```
 
 ---

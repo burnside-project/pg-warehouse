@@ -38,6 +38,14 @@ type StateStore interface {
 	// Schema version
 	SchemaVersion(ctx context.Context) (int, error)
 
+	// Epoch management (CDC transactional boundaries)
+	OpenEpoch(ctx context.Context) (*models.Epoch, error)
+	CommitEpoch(ctx context.Context, epochID int64, endLSN string, rowCount int64) error
+	MarkEpochMerged(ctx context.Context, epochID int64) error
+	GetOpenEpoch(ctx context.Context) (*models.Epoch, error)
+	GetCommittedEpochs(ctx context.Context) ([]models.Epoch, error)
+	GetLatestMergedEpoch(ctx context.Context) (*models.Epoch, error)
+
 	// Lifecycle
 	Close() error
 }

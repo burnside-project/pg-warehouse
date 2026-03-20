@@ -18,16 +18,42 @@ Infrastructure (PostgreSQL, DuckDB, SQLite)
 
 ## Data Flow
 
+### Single-File Mode (Default)
+
 ```
 PostgreSQL (source)
    ↓ snapshot / watermark / CDC
 DuckDB (local warehouse)
    ├── raw.*   — mirrored source tables
    ├── stage.* — temporary staging for incremental merge
+   ├── silver.* — curated, joined, enriched tables
    └── feat.*  — SQL feature pipeline outputs
    ↓
 Parquet / CSV exports
 ```
+
+### Multi-File Mode (Zero-Downtime)
+
+```
+PostgreSQL (source)
+   ↓ WAL streaming (never stops)
+warehouse.duckdb (BLACK BOX — CDC owns exclusively)
+   ├── stage.* → dedup/merge buffer (internal)
+   ├── raw.*   → clean, deduped, epoch-stamped source tables
+   └── _epochs → epoch metadata
+   ↓ ATTACH READ_ONLY
+silver.duckdb (DEVELOPMENT PLATFORM — versioned)
+   ├── v1.*, v2.*, v3.* → versioned transform schemas
+   ├── current.*         → views pointing to active version
+   └── _meta.versions    → version registry
+   ↓ ATTACH READ_ONLY
+feature.duckdb
+   └── feat.* → analytics-ready aggregations
+   ↓
+Parquet / CSV exports → Dashboard → AI Q&A
+```
+
+See [Multi-DuckDB Architecture](09-multi-duckdb-architecture.md) for details.
 
 ## State Flow
 
@@ -63,8 +89,10 @@ SQLite (.pgwh/state.db)
 |---------|---------------|
 | `InitService` | Project initialization, DuckDB bootstrap, PG connectivity check |
 | `SyncService` | Full snapshot and watermark-based incremental sync |
-| `CDCService` | CDC lifecycle: setup, snapshot, streaming, teardown |
+| `CDCService` | CDC lifecycle: setup, snapshot, epoch management, streaming, teardown |
 | `RunService` | SQL feature file execution with target validation and export |
+| `SilverService` | Silver version management: create, promote, compare, drop (multi-file mode) |
+| `FeatureService` | Feature pipeline execution with ATTACH isolation (multi-file mode) |
 | `PreviewService` | SQL preview with sample rows |
 | `InspectService` | Warehouse table listing, schema description, sync state |
 | `ExportService` | Table export to Parquet/CSV with directory creation |
@@ -76,6 +104,9 @@ SQLite (.pgwh/state.db)
 2. **Adapters must not call each other directly.** All coordination goes through services.
 3. **Domain contains pure business logic.** No infrastructure imports.
 4. **State is decoupled from data.** SQLite state DB survives DuckDB rebuilds.
+5. **warehouse.duckdb is a black box.** CDC owns it exclusively. Users read raw.* only.
+6. **Silver reads from raw only. Feat reads from silver only.** Strict layer isolation.
+7. **Epochs guarantee consistency.** Pipeline only reads merged (committed) epochs.
 
 ## Directory Structure
 

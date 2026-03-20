@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/burnside-project/pg-warehouse/internal/adapters/postgres"
 	"github.com/burnside-project/pg-warehouse/internal/services"
@@ -38,7 +39,7 @@ var cdcSetupCmd = &cobra.Command{
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
 		defer func() { _ = cdcAdapter.Close() }()
 
-		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
+		svc := services.NewCDCService(cdcAdapter, app.WarehouseDB(), app.State, pgSource, app.Logger)
 		if err := svc.Setup(ctx, app.Cfg.CDC); err != nil {
 			return err
 		}
@@ -72,7 +73,7 @@ var cdcTeardownCmd = &cobra.Command{
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
 		defer func() { _ = cdcAdapter.Close() }()
 
-		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
+		svc := services.NewCDCService(cdcAdapter, app.WarehouseDB(), app.State, pgSource, app.Logger)
 		if err := svc.Teardown(ctx, app.Cfg.CDC); err != nil {
 			return err
 		}
@@ -83,6 +84,7 @@ var cdcTeardownCmd = &cobra.Command{
 }
 
 var cdcFromLSN string
+var cdcDropSlotOnExit bool
 
 var cdcStartCmd = &cobra.Command{
 	Use:   "start",
@@ -92,6 +94,11 @@ var cdcStartCmd = &cobra.Command{
 Use --from-lsn to skip the initial snapshot and start streaming from a known LSN.
 This is useful when you have pre-seeded DuckDB using a fast bulk copy (pg_dump,
 COPY TO CSV, or DuckDB postgres_scan) and want CDC to catch up from that point.
+
+Use --drop-slot-on-exit (or set cdc.drop_slot_on_exit in config) to automatically
+drop the replication slot when CDC exits. This prevents orphaned slots from
+accumulating WAL and filling the PostgreSQL disk. Recommended for non-production
+environments or when CDC may crash and not be immediately restarted.
 
 Example workflow:
   1. pg-warehouse cdc setup
@@ -126,11 +133,31 @@ Example workflow:
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
 		defer func() { _ = cdcAdapter.Close() }()
 
-		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
+		svc := services.NewCDCService(cdcAdapter, app.WarehouseDB(), app.State, pgSource, app.Logger)
+
+		// Merge CLI flag with config (CLI flag takes precedence)
+		dropSlot := app.Cfg.CDC.DropSlotOnExit || cdcDropSlotOnExit
+
+		// Auto-drop slot on ANY exit (graceful, crash, lag exceeded)
+		if dropSlot {
+			defer func() {
+				fmt.Println("Dropping replication slot (drop-slot-on-exit enabled)...")
+				bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer bgCancel()
+				svc.TeardownSlot(bgCtx, app.Cfg.CDC)
+			}()
+		}
 
 		fmt.Printf("Starting CDC streaming (slot=%s, publication=%s)\n", app.Cfg.CDC.SlotName, app.Cfg.CDC.PublicationName)
 		if cdcFromLSN != "" {
 			fmt.Printf("Fast-seed mode: skipping snapshot, starting from LSN %s\n", cdcFromLSN)
+		}
+		if dropSlot {
+			fmt.Println("Slot will be dropped on exit (drop-slot-on-exit enabled)")
+		}
+		if app.Cfg.CDC.MaxLagBytes > 0 {
+			fmt.Printf("Lag guardrail: CDC will stop if lag exceeds %.1f GB\n",
+				float64(app.Cfg.CDC.MaxLagBytes)/(1024*1024*1024))
 		}
 		fmt.Println("Press Ctrl+C to stop")
 
@@ -165,7 +192,7 @@ var cdcStatusCmd = &cobra.Command{
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
 		defer func() { _ = cdcAdapter.Close() }()
 
-		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
+		svc := services.NewCDCService(cdcAdapter, app.WarehouseDB(), app.State, pgSource, app.Logger)
 
 		status, states, err := svc.Status(ctx, app.Cfg.CDC)
 		if err != nil {
@@ -192,6 +219,7 @@ var cdcStatusCmd = &cobra.Command{
 
 func init() {
 	cdcStartCmd.Flags().StringVar(&cdcFromLSN, "from-lsn", "", "skip initial snapshot and start streaming from this LSN (for fast-seed workflows)")
+	cdcStartCmd.Flags().BoolVar(&cdcDropSlotOnExit, "drop-slot-on-exit", false, "drop replication slot on exit to prevent orphaned WAL accumulation")
 	cdcCmd.AddCommand(cdcSetupCmd)
 	cdcCmd.AddCommand(cdcTeardownCmd)
 	cdcCmd.AddCommand(cdcStartCmd)

@@ -1,0 +1,13 @@
+services:
+  dashboard:
+    build: .
+    ports:
+      - "8050:8050"
+    volumes:
+      - ${DATA_DIR:-../out}:/data:ro
+      - ../models:/models:ro
+    environment:
+      - DATA_DIR=/data
+      - MODELS_DIR=/models
+      - PORT=8050
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

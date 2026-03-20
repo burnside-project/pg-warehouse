@@ -1,0 +1,162 @@
+# ============================================================================
+# Entity: Order
+# Silver table: silver.order_enriched
+# Grain: one row per order
+# ============================================================================
+
+name: order
+display_name: Order
+description: >
+  Denormalized order combining header, line items, payments, shipments,
+  and coupon redemptions into a single row per order.
+table: silver.order_enriched
+grain: one row per order
+primary_key: order_id
+
+columns:
+  - name: order_id
+    type: bigint
+    description: Unique order identifier
+    role: primary_key
+
+  - name: customer_id
+    type: bigint
+    description: Customer who placed the order
+    role: foreign_key
+    references: customer.customer_id
+
+  - name: address_id
+    type: bigint
+    description: Shipping address used for the order
+    nullable: true
+
+  - name: order_status
+    type: text
+    description: "Current order status"
+    enum: [pending, confirmed, processing, shipped, delivered, cancelled, refunded]
+
+  - name: order_date
+    type: timestamp
+    description: When the order was placed
+    role: timestamp
+    synonyms: [placed_at, order_time, purchase_date]
+
+  - name: order_updated_at
+    type: timestamp
+    description: Last modification timestamp
+
+  # ── Financials ─────────────────────────────────────────────────────
+  - name: subtotal
+    type: numeric
+    description: Sum of line items before tax and shipping
+    unit: USD
+
+  - name: tax
+    type: numeric
+    description: Tax amount
+    unit: USD
+
+  - name: shipping_cost
+    type: numeric
+    description: Shipping fee charged
+    unit: USD
+    synonyms: [shipping, delivery_cost]
+
+  - name: order_total
+    type: numeric
+    description: "Final order amount: subtotal + tax + shipping"
+    unit: USD
+    synonyms: [total, amount, revenue]
+
+  # ── Line items ─────────────────────────────────────────────────────
+  - name: line_item_count
+    type: integer
+    description: Number of distinct line items (SKUs) in the order
+    synonyms: [items, num_items]
+
+  - name: total_quantity
+    type: integer
+    description: Total units ordered across all line items
+    synonyms: [units, qty]
+
+  - name: items_subtotal
+    type: numeric
+    description: Sum of (qty * unit_price) across line items
+    unit: USD
+
+  # ── Payment ────────────────────────────────────────────────────────
+  - name: payment_method
+    type: text
+    description: Payment method used
+    enum: [credit_card, paypal, bank_transfer, apple_pay, google_pay]
+    synonyms: [pay_method, payment_type]
+
+  - name: payment_status
+    type: text
+    description: Payment status
+    enum: [pending, paid, failed, refunded]
+
+  - name: payment_amount
+    type: numeric
+    description: Amount captured by payment processor
+    unit: USD
+
+  - name: gateway_txn_id
+    type: text
+    description: Payment gateway transaction reference
+    nullable: true
+
+  - name: payment_settled_at
+    type: timestamp
+    description: When payment was settled
+    nullable: true
+
+  # ── Shipment ───────────────────────────────────────────────────────
+  - name: carrier
+    type: text
+    description: Shipping carrier name
+    nullable: true
+    synonyms: [shipper, courier]
+
+  - name: tracking_number
+    type: text
+    description: Shipment tracking number
+    nullable: true
+
+  - name: shipment_status
+    type: text
+    description: Shipment delivery status
+    enum: [label_created, shipped, in_transit, delivered, returned]
+    nullable: true
+
+  - name: shipped_at
+    type: timestamp
+    description: When the shipment was dispatched
+    nullable: true
+
+  - name: delivered_at
+    type: timestamp
+    description: When the shipment was delivered
+    nullable: true
+
+  # ── Coupons ────────────────────────────────────────────────────────
+  - name: coupon_discount
+    type: numeric
+    description: Total discount applied from coupon redemptions
+    unit: USD
+    synonyms: [discount, promo_discount]
+
+  - name: coupon_count
+    type: integer
+    description: Number of coupons redeemed on this order
+    nullable: true
+
+# ── Common Questions ─────────────────────────────────────────────────────────
+
+example_questions:
+  - "How many orders were placed last month?"
+  - "What is the average order value?"
+  - "Show me orders with failed payments"
+  - "What percentage of orders used a coupon?"
+  - "Which carrier delivers the most orders?"
+  - "What is the average time from order to delivery?"

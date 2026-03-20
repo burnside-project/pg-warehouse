@@ -40,6 +40,12 @@ max_replication_slots = 4
 max_wal_senders = 4
 ```
 
+> **This is important** to understand - We dont want a runaway WAL disk write. We want to cap it to X based on your resource
+```ini
+# this will CAP it at 10GB. Set it according to your enviornment
+max_slot_wal_keep_size = 10GB
+```
+
 ### 2. PostgreSQL User Setup
 
 > The connection user needs ownership of the tables it will replicate and the `REPLICATION` privilege:
@@ -94,7 +100,33 @@ WHERE rolname IN ('warehouse')
 psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 ```
 
-### 3. Create `pg-warehouse.yml` in your working directory.
+### 3. Create the working directory and `pg-warehouse.yml`
+
+> All pg-warehouse commands run from a single working directory. The canonical location is `~/pg-warehouse/`.
+
+```bash
+# Create the working directory
+mkdir -p ~/pg-warehouse/{sql/silver,sql/feat,out,.pgwh}
+cd ~/pg-warehouse
+
+# Copy or build the binary
+go build -o ~/pg-warehouse/pg-warehouse ./cmd/pg-warehouse/
+# or: cp /path/to/pg-warehouse ~/pg-warehouse/pg-warehouse
+```
+
+The resulting directory layout:
+
+```
+~/pg-warehouse/
+├── pg-warehouse           # Binary
+├── pg-warehouse.yml       # Configuration (create below)
+├── warehouse.duckdb       # DuckDB warehouse (created by init)
+├── .pgwh/state.db         # SQLite state (created by init)
+├── sql/silver/            # Silver layer SQL transforms
+├── sql/feat/              # Feature layer SQL transforms
+├── out/                   # Parquet/CSV exports
+└── cdc.log                # CDC log (when running via nohup)
+```
 
 > This config file is required before running any pg-warehouse commands (including `cdc setup` in the next step).
 
@@ -260,6 +292,46 @@ tail -5 cdc.log
 
 ---
 
+## Running as a systemd Service
+
+For production deployments, use systemd to manage the CDC process:
+
+```ini
+# /etc/systemd/system/pg-warehouse-cdc.service
+[Unit]
+Description=pg-warehouse CDC streaming
+After=network.target
+
+[Service]
+Type=simple
+User=daadmin
+WorkingDirectory=/home/daadmin/pg-warehouse
+ExecStartPre=/usr/bin/sqlite3 /home/daadmin/pg-warehouse/.pgwh/state.db 'DELETE FROM lock_state;'
+ExecStart=/home/daadmin/pg-warehouse/pg-warehouse cdc start --config pg-warehouse.yml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pg-warehouse-cdc
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable pg-warehouse-cdc
+sudo systemctl start pg-warehouse-cdc
+
+# Check status
+sudo systemctl status pg-warehouse-cdc
+journalctl -u pg-warehouse-cdc -f
+```
+
+> **Note:** The `ExecStartPre` clears stale locks from the previous run. This is safe because systemd guarantees single-instance execution.
+
+---
+
 ## Frequently Asked Question
 
 ### How to Build a pg-warehouse binary ?
@@ -375,6 +447,41 @@ pg-warehouse export \
   --file-type csv
 ```
 
+### How to manage Silver versions in pg-warehouse?
+
+> Requires multi-file mode (`duckdb.warehouse` set in config). See [Silver Versioning](10-silver-versioning.md).
+
+```bash
+# Create a new version
+pg-warehouse silver create-version --label "add shipping address"
+
+# Build transforms targeting the new version
+pg-warehouse run --sql-file ./sql/silver/v2/001_order_enriched.sql \
+  --target-table v2.order_enriched
+
+# Compare versions
+pg-warehouse silver compare --base v1 --candidate v2
+
+# Promote to production (swaps current.* views)
+pg-warehouse silver promote --version 2
+
+# List all versions
+pg-warehouse silver list-versions
+
+# Drop an archived version
+pg-warehouse silver drop-version --version 1
+```
+
+### How to inspect CDC epochs in pg-warehouse?
+
+```bash
+# List all epochs with status
+pg-warehouse epoch list
+
+# Show current epoch status
+pg-warehouse epoch status
+```
+
 ---
 
 # Reference
@@ -410,7 +517,11 @@ postgres:
 #   silver.* — Silver: user curated/transformed intermediate tables
 #   feat.*   — Gold: analytics-ready feature pipeline outputs (written by 'run' command)
 duckdb:
-  path: ./warehouse.duckdb            # Path to DuckDB file (created on init)
+  path: ./warehouse.duckdb            # Single-file mode: all schemas in one file
+  # Multi-file mode (zero-downtime CDC, see docs/09-multi-duckdb-architecture.md):
+  # warehouse: ./warehouse.duckdb     # CDC black box (raw.*, stage.*)
+  # silver: ./silver.duckdb           # Development platform (versioned silver schemas)
+  # feature: ./feature.duckdb         # Analytics output (feat.*)
 
 # ──────────────────────────────────────────────────────────────────────
 # State Database
@@ -431,6 +542,13 @@ cdc:
   slot_name: pgwh_slot                 # Replication slot name (default: pgwh_slot)
   tables:                              # Tables to include in the publication
     - public.products
+  # Guardrails (prevent PostgreSQL disk fill)
+  drop_slot_on_exit: true              # Drop replication slot on CDC exit (default: false)
+  max_lag_bytes: 5368709120            # Stop CDC if lag exceeds 5GB (default: 5GB, 0=disabled)
+  health_check_sec: 60                 # Lag health check interval in seconds (default: 60)
+  # Epoch system (for multi-file mode)
+  epoch_interval_sec: 60               # Seconds between epoch commits (default: 60)
+  epoch_max_rows: 10000                # Max rows before forcing epoch commit (default: 10000)
 
 # ──────────────────────────────────────────────────────────────────────
 # Sync
@@ -547,6 +665,7 @@ State is stored in SQLite (`.pgwh/state.db`), **not DuckDB**, so it survives war
 | `audit_log` | Platform audit trail |
 | `watermarks` | Named progress checkpoints (e.g., `cdc_confirmed_lsn`) |
 | `lock_state` | Concurrent execution prevention |
+| `epochs` | CDC epoch boundaries (open, committed, merged) |
 | `schema_version` | Migration tracking |
 
 ## Configuration Defaults
@@ -563,6 +682,11 @@ These values are applied when the corresponding config field is omitted. Defined
 | `state.path` | `.pgwh/state.db` | |
 | `cdc.publication_name` | `pgwh_pub` | PostgreSQL publication name |
 | `cdc.slot_name` | `pgwh_slot` | PostgreSQL replication slot name |
+| `cdc.drop_slot_on_exit` | `false` | Drop slot on CDC exit to prevent orphaned WAL |
+| `cdc.max_lag_bytes` | `5368709120` (5GB) | Stop CDC if replication lag exceeds this |
+| `cdc.health_check_sec` | `60` | Lag health check interval (seconds) |
+| `cdc.epoch_interval_sec` | `60` | Epoch commit interval (seconds) |
+| `cdc.epoch_max_rows` | `10000` | Max rows before epoch commit |
 | `sync.default_batch_size` | `50000` | Rows per sync batch |
 | `sync.tables[].target_schema` | `raw` | DuckDB target schema per table |
 | `run.default_output_dir` | `./out` | Export output directory |

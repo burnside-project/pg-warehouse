@@ -1,0 +1,143 @@
+# ============================================================================
+# Entity: Product
+# Silver table: silver.product_catalog
+# Grain: one row per product
+# ============================================================================
+
+name: product
+display_name: Product
+description: >
+  Complete product catalog combining products with variants, categories,
+  inventory levels, price history, and review metrics.
+table: silver.product_catalog
+grain: one row per product
+primary_key: product_id
+
+columns:
+  - name: product_id
+    type: bigint
+    description: Unique product identifier
+    role: primary_key
+
+  - name: product_name
+    type: text
+    description: Product display name
+    synonyms: [name, title, item]
+
+  - name: slug
+    type: text
+    description: URL-friendly product identifier
+
+  - name: description
+    type: text
+    description: Product description text
+    nullable: true
+
+  - name: base_price
+    type: numeric
+    description: Base retail price before variants
+    unit: USD
+    synonyms: [price, msrp]
+
+  - name: product_status
+    type: text
+    description: Product lifecycle status
+    enum: [active, inactive, discontinued]
+
+  - name: listed_at
+    type: timestamp
+    description: When the product was first listed
+    synonyms: [created_at, launch_date]
+
+  # ── Category ───────────────────────────────────────────────────────
+  - name: category_name
+    type: text
+    description: Product category name
+    synonyms: [category, department]
+
+  - name: category_slug
+    type: text
+    description: URL-friendly category identifier
+
+  - name: parent_category_id
+    type: integer
+    description: Parent category for hierarchical navigation
+    nullable: true
+
+  # ── Variants ───────────────────────────────────────────────────────
+  - name: variant_count
+    type: integer
+    description: Number of size/color/SKU variants
+    synonyms: [num_variants, skus]
+
+  - name: min_price
+    type: numeric
+    description: Lowest variant price override
+    unit: USD
+    nullable: true
+
+  - name: max_price
+    type: numeric
+    description: Highest variant price override
+    unit: USD
+    nullable: true
+
+  - name: avg_weight_grams
+    type: numeric
+    description: Average weight across variants in grams
+    nullable: true
+
+  # ── Inventory ──────────────────────────────────────────────────────
+  - name: total_available
+    type: integer
+    description: Total available units across all variants and warehouses
+    synonyms: [stock, inventory, in_stock_qty]
+
+  - name: total_reserved
+    type: integer
+    description: Units reserved for pending orders
+
+  # ── Price History ──────────────────────────────────────────────────
+  - name: price_change_count
+    type: integer
+    description: Number of price changes recorded
+
+  - name: last_price_change_at
+    type: timestamp
+    description: When the price was last changed
+    nullable: true
+
+  # ── Reviews ────────────────────────────────────────────────────────
+  - name: review_count
+    type: integer
+    description: Number of customer reviews
+    synonyms: [num_reviews, ratings_count]
+
+  - name: avg_rating
+    type: numeric
+    description: Average star rating (1-5)
+    synonyms: [rating, stars]
+    nullable: true
+
+  - name: min_rating
+    type: smallint
+    description: Lowest review rating
+    nullable: true
+
+  - name: max_rating
+    type: smallint
+    description: Highest review rating
+    nullable: true
+
+  # ── Derived ────────────────────────────────────────────────────────
+  - name: stock_status
+    type: text
+    description: "Inventory status: out_of_stock (0), low_stock (<10), in_stock (≥10)"
+    enum: [out_of_stock, low_stock, in_stock]
+
+example_questions:
+  - "How many products are out of stock?"
+  - "What is the average rating across all products?"
+  - "Which category has the most products?"
+  - "Show products with high ratings but low stock"
+  - "How many products have had price changes?"

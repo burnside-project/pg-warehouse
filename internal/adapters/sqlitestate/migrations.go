@@ -48,4 +48,15 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // Future migrations go here as: migrations[2] = "ALTER TABLE ..."
 var migrations = map[int]string{
 	// Version 1: initial schema — handled by bootstrapSQL, no migration needed
+
+	// Version 2: add epochs table for CDC transactional boundaries
+	2: `CREATE TABLE IF NOT EXISTS epochs (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		started_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+		committed_at  TEXT,
+		start_lsn     TEXT,
+		end_lsn       TEXT,
+		row_count     INTEGER NOT NULL DEFAULT 0,
+		status        TEXT    NOT NULL DEFAULT 'open'
+	);`,
 }

@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>pg-warehouse | E-Commerce Analytics</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<div class="header">
+    <div>
+        <h1>E-Commerce Analytics</h1>
+        <div class="subtitle">pg-warehouse &middot; Medallion Architecture &middot; Parquet &rarr; Dashboard</div>
+    </div>
+    <nav class="nav">
+        <button class="active" onclick="showPage('sales')">Sales</button>
+        <button onclick="showPage('customers')">Customers</button>
+        <button onclick="showPage('products')">Products</button>
+        <button onclick="showPage('promotions')">Promotions</button>
+        <button onclick="showPage('inventory')">Inventory</button>
+        <button onclick="showPage('qa')" id="btn-qa">Ask AI</button>
+    </nav>
+</div>
+
+<div class="main">
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- SALES PAGE                                                            -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="page-sales" class="page active">
+    <div class="page-title">Sales Dashboard</div>
+    <div class="page-question">How is the business performing day-over-day?</div>
+
+    <div class="grid grid-4" id="sales-kpis">
+        <div class="card"><div class="loading">Loading...</div></div>
+        <div class="card"><div class="loading">Loading...</div></div>
+        <div class="card"><div class="loading">Loading...</div></div>
+        <div class="card"><div class="loading">Loading...</div></div>
+    </div>
+
+    <div class="section-header">
+        <div class="section-title">Revenue Trend</div>
+        <div class="section-question">What does our revenue trajectory look like?</div>
+    </div>
+    <div class="card" style="margin-bottom:24px">
+        <div class="card-chart"><canvas id="chart-revenue"></canvas></div>
+    </div>
+
+    <div class="grid grid-2">
+        <div>
+            <div class="section-header">
+                <div class="section-title">Payment Methods</div>
+                <div class="section-question">How do customers prefer to pay?</div>
+            </div>
+            <div class="card">
+                <div class="card-chart" style="height:250px"><canvas id="chart-payments"></canvas></div>
+            </div>
+        </div>
+        <div>
+            <div class="section-header">
+                <div class="section-title">Fulfillment</div>
+                <div class="section-question">What percentage of orders are delivered?</div>
+            </div>
+            <div class="card">
+                <div class="card-chart" style="height:250px"><canvas id="chart-fulfillment"></canvas></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- CUSTOMERS PAGE                                                        -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="page-customers" class="page">
+    <div class="page-title">Customer Dashboard</div>
+    <div class="page-question">Who are our customers and how engaged are they?</div>
+
+    <div class="grid grid-2">
+        <div>
+            <div class="section-header">
+                <div class="section-title">Customer Segments</div>
+                <div class="section-question">How are customers distributed by purchase frequency?</div>
+            </div>
+            <div class="card">
+                <div class="card-chart" style="height:280px"><canvas id="chart-segments"></canvas></div>
+            </div>
+        </div>
+        <div>
+            <div class="section-header">
+                <div class="section-title">Activity Status</div>
+                <div class="section-question">How many customers are at risk of churning?</div>
+            </div>
+            <div class="card">
+                <div class="card-chart" style="height:280px"><canvas id="chart-activity"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-header" style="margin-top:24px">
+        <div class="section-title">Top Customers by Lifetime Revenue</div>
+        <div class="section-question">Who are our most valuable customers?</div>
+    </div>
+    <div class="card">
+        <table class="data-table" id="table-top-customers">
+            <thead>
+                <tr>
+                    <th>Customer</th>
+                    <th>Segment</th>
+                    <th>Activity</th>
+                    <th>Country</th>
+                    <th class="text-right">Orders</th>
+                    <th class="text-right">Revenue</th>
+                    <th class="text-right">Est. Annual LTV</th>
+                </tr>
+            </thead>
+            <tbody><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+        </table>
+    </div>
+
+    <div class="section-header" style="margin-top:24px">
+        <div class="section-title">Signup Cohorts</div>
+        <div class="section-question">Which signup months produce the highest-value customers?</div>
+    </div>
+    <div class="card">
+        <div class="card-chart"><canvas id="chart-cohorts"></canvas></div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- PRODUCTS PAGE                                                         -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="page-products" class="page">
+    <div class="page-title">Product Dashboard</div>
+    <div class="page-question">Which products drive the most revenue and have the best reviews?</div>
+
+    <div class="section-header">
+        <div class="section-title">Top Products by Revenue</div>
+        <div class="section-question">What are our best sellers?</div>
+    </div>
+    <div class="card" style="margin-bottom:24px">
+        <table class="data-table" id="table-top-products">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Product</th>
+                    <th>Category</th>
+                    <th class="text-right">Orders</th>
+                    <th class="text-right">Units Sold</th>
+                    <th class="text-right">Revenue</th>
+                    <th class="text-right">Rating</th>
+                    <th>Stock</th>
+                </tr>
+            </thead>
+            <tbody><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+        </table>
+    </div>
+
+    <div class="section-header">
+        <div class="section-title">Revenue by Category</div>
+        <div class="section-question">Which categories generate the most revenue?</div>
+    </div>
+    <div class="card">
+        <div class="card-chart"><canvas id="chart-categories"></canvas></div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- PROMOTIONS PAGE                                                       -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="page-promotions" class="page">
+    <div class="page-title">Promotions Dashboard</div>
+    <div class="page-question">Which promotions are most effective at driving orders?</div>
+
+    <div class="grid grid-2" style="margin-bottom:24px">
+        <div>
+            <div class="section-header">
+                <div class="section-title">Reach Tiers</div>
+                <div class="section-question">How many customers do our promos reach?</div>
+            </div>
+            <div class="card">
+                <div class="card-chart" style="height:250px"><canvas id="chart-reach"></canvas></div>
+            </div>
+        </div>
+        <div>
+            <div class="section-header">
+                <div class="section-title">Discount by Reach</div>
+                <div class="section-question">Where is the discount budget going?</div>
+            </div>
+            <div class="card">
+                <div class="card-chart" style="height:250px"><canvas id="chart-reach-discount"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-header">
+        <div class="section-title">Promotion Details</div>
+        <div class="section-question">What is the ROI per promotion code?</div>
+    </div>
+    <div class="card">
+        <table class="data-table" id="table-promos">
+            <thead>
+                <tr>
+                    <th>Code</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th class="text-right">Redemptions</th>
+                    <th class="text-right">Customers</th>
+                    <th class="text-right">Discount Given</th>
+                    <th class="text-right">Avg Order Total</th>
+                    <th>Reach</th>
+                </tr>
+            </thead>
+            <tbody><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- INVENTORY PAGE                                                        -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="page-inventory" class="page">
+    <div class="page-title">Inventory Dashboard</div>
+    <div class="page-question">Which products are running low and need reordering?</div>
+
+    <div class="section-header">
+        <div class="section-title">Stock Health</div>
+        <div class="section-question">What is the overall inventory health distribution?</div>
+    </div>
+    <div class="card" style="margin-bottom:24px">
+        <div class="card-chart" style="height:250px"><canvas id="chart-stock-health"></canvas></div>
+    </div>
+
+    <div class="section-header">
+        <div class="section-title">Reorder Alerts</div>
+        <div class="section-question">Which products need immediate restocking?</div>
+    </div>
+    <div class="card">
+        <table class="data-table" id="table-reorder">
+            <thead>
+                <tr>
+                    <th>Signal</th>
+                    <th>Product</th>
+                    <th>Category</th>
+                    <th class="text-right">Available</th>
+                    <th class="text-right">Reserved</th>
+                    <th class="text-right">Net Available</th>
+                    <th class="text-right">Sold (30d)</th>
+                    <th class="text-right">Days of Stock</th>
+                </tr>
+            </thead>
+            <tbody><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- AI Q&A PAGE                                                           -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="page-qa" class="page">
+    <div class="page-title">Ask AI</div>
+    <div class="page-question">Ask any question about your e-commerce data in natural language</div>
+
+    <div class="card qa-card" style="margin-bottom:24px">
+        <div class="qa-input-row">
+            <input type="text" id="qa-input" class="qa-input"
+                   placeholder="e.g., What is our total revenue this month?"
+                   autocomplete="off">
+            <button id="qa-submit" class="qa-button" onclick="askQuestion()">Ask</button>
+        </div>
+        <div id="qa-status" class="qa-status"></div>
+    </div>
+
+    <!-- Answer -->
+    <div id="qa-answer-section" style="display:none">
+        <div class="card" style="margin-bottom:16px">
+            <div class="card-title">Answer</div>
+            <div id="qa-answer" class="qa-answer"></div>
+        </div>
+
+        <div class="grid grid-2">
+            <div class="card">
+                <div class="card-title">Generated SQL</div>
+                <pre id="qa-sql" class="qa-sql"></pre>
+            </div>
+            <div class="card">
+                <div class="card-title">Raw Data</div>
+                <div id="qa-data" class="qa-data"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Suggested questions -->
+    <div class="section-header" style="margin-top:24px">
+        <div class="section-title">Suggested Questions</div>
+        <div class="section-question">Click any question to try it</div>
+    </div>
+    <div id="qa-suggestions" class="qa-suggestions">
+        <div class="loading">Loading suggestions...</div>
+    </div>
+</div>
+
+</div><!-- .main -->
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

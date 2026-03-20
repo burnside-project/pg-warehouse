@@ -1,0 +1,75 @@
+# ============================================================================
+# Metrics: Inventory Health
+# Feat table: feat.inventory_health
+# Grain: one row per active product
+# ============================================================================
+
+name: inventory_health
+display_name: Inventory Health Metrics
+description: Stock levels, sell-through velocity, and reorder signals
+table: feat.inventory_health
+grain: one row per active product
+
+dimensions:
+  - name: category_name
+    type: text
+    description: Product category
+    synonyms: [category]
+
+  - name: stock_status
+    type: text
+    description: "Stock classification: in_stock, low_stock, out_of_stock"
+
+  - name: reorder_signal
+    type: text
+    description: "Reorder urgency: reorder_urgent, reorder_soon, healthy"
+    synonyms: [signal, alert, reorder_status]
+
+measures:
+  - name: total_available
+    type: integer
+    description: Units available to sell
+    aggregation: SUM
+    synonyms: [stock, available, on_hand]
+
+  - name: total_reserved
+    type: integer
+    description: Units reserved for pending orders
+    aggregation: SUM
+
+  - name: net_available
+    type: integer
+    description: Available minus reserved
+    aggregation: SUM
+    synonyms: [free_stock, sellable]
+
+  - name: units_sold_last_30d
+    type: integer
+    description: Units sold in the last 30 days
+    aggregation: SUM
+    synonyms: [velocity, recent_sales, sold_30d]
+
+  - name: estimated_days_of_stock
+    type: numeric
+    description: Projected days until stockout at current velocity
+    aggregation: AVG
+    synonyms: [runway, days_remaining, stock_days]
+
+derived_metrics:
+  - name: stockout_count
+    description: Number of products currently out of stock
+    formula: "COUNT(CASE WHEN reorder_signal = 'reorder_urgent' THEN 1 END)"
+
+  - name: at_risk_count
+    description: Products needing reorder soon
+    formula: "COUNT(CASE WHEN reorder_signal = 'reorder_soon' THEN 1 END)"
+
+  - name: inventory_value
+    description: Estimated value of available inventory
+    formula: "SUM(total_available * base_price)"
+    unit: USD
+
+  - name: sell_through_rate
+    description: Percentage of stock sold in last 30 days
+    formula: "SUM(units_sold_last_30d) * 100.0 / NULLIF(SUM(total_available + units_sold_last_30d), 0)"
+    unit: percent

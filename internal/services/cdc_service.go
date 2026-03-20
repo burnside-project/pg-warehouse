@@ -20,6 +20,11 @@ type CDCService struct {
 	state     ports.StateStore
 	pgSource  ports.PostgresSource
 	logger    *logging.Logger
+
+	// Epoch tracking for CDC writes
+	cdcCfg        models.CDCCfg
+	currentEpoch  *models.Epoch
+	epochRowCount int64
 }
 
 // NewCDCService creates a new CDCService.
@@ -120,6 +125,9 @@ func (s *CDCService) Start(ctx context.Context, cfg models.CDCCfg, tableConfigs 
 
 	_ = s.state.AddAuditEntry(ctx, models.AuditInfo, models.EventCDCStart,
 		"CDC streaming started", map[string]any{"slot": cfg.SlotName})
+
+	// Store CDC config for epoch management
+	s.cdcCfg = cfg
 
 	tableConfigMap := make(map[string]models.TableConfig)
 	for _, tc := range tableConfigs {
@@ -296,6 +304,14 @@ func (s *CDCService) streamOnce(ctx context.Context, cfg models.CDCCfg, startLSN
 	confirmTicker := time.NewTicker(10 * time.Second)
 	defer confirmTicker.Stop()
 
+	// Health check ticker for lag monitoring
+	healthInterval := time.Duration(cfg.HealthCheckSec) * time.Second
+	if healthInterval <= 0 {
+		healthInterval = 60 * time.Second
+	}
+	healthTicker := time.NewTicker(healthInterval)
+	defer healthTicker.Stop()
+
 	var lastLSN string
 
 	for {
@@ -328,6 +344,18 @@ func (s *CDCService) streamOnce(ctx context.Context, cfg models.CDCCfg, startLSN
 				} else {
 					_ = s.state.SetWatermark(ctx, "cdc_confirmed_lsn", lastLSN)
 				}
+
+				// Epoch management: commit if interval or row threshold reached
+				s.commitEpochIfNeeded(ctx, lastLSN, tableConfigMap)
+			}
+
+		case <-healthTicker.C:
+			if err := s.checkReplicationHealth(ctx, cfg); err != nil {
+				// Lag exceeded threshold — return error to trigger shutdown
+				if len(batch) > 0 {
+					s.flushBatch(ctx, batch, tableConfigMap)
+				}
+				return lastLSN, err
 			}
 
 		case err := <-errCh:
@@ -339,36 +367,87 @@ func (s *CDCService) streamOnce(ctx context.Context, cfg models.CDCCfg, startLSN
 	}
 }
 
+// checkReplicationHealth queries the replication slot lag and returns an error
+// if it exceeds the configured MaxLagBytes threshold. This prevents the CDC
+// process from running when the PostgreSQL server is at risk of filling its disk
+// with retained WAL segments.
+func (s *CDCService) checkReplicationHealth(ctx context.Context, cfg models.CDCCfg) error {
+	if cfg.MaxLagBytes <= 0 {
+		return nil // disabled
+	}
+
+	status, err := s.cdcSource.Status(ctx, cfg.SlotName)
+	if err != nil {
+		s.logger.Warn("health check: failed to query replication status: %v", err)
+		return nil // don't kill CDC over a transient status query failure
+	}
+
+	if status.LagBytes > cfg.MaxLagBytes {
+		msg := fmt.Sprintf(
+			"CRITICAL: replication lag (%d bytes / %.1f GB) exceeds max_lag_bytes (%d bytes / %.1f GB). "+
+				"Stopping CDC to prevent PostgreSQL disk fill. "+
+				"Investigate and resolve before restarting.",
+			status.LagBytes, float64(status.LagBytes)/(1024*1024*1024),
+			cfg.MaxLagBytes, float64(cfg.MaxLagBytes)/(1024*1024*1024))
+
+		s.logger.Error("%s", msg)
+		_ = s.state.AddAuditEntry(ctx, "critical", "cdc.lag_exceeded", msg, map[string]any{
+			"lag_bytes":     status.LagBytes,
+			"max_lag_bytes": cfg.MaxLagBytes,
+			"slot":          cfg.SlotName,
+		})
+
+		return fmt.Errorf("replication lag exceeded threshold: %d bytes > %d bytes", status.LagBytes, cfg.MaxLagBytes)
+	}
+
+	// Log healthy status at debug level
+	s.logger.Debug("health check: lag=%d bytes (%.1f MB), threshold=%d bytes",
+		status.LagBytes, float64(status.LagBytes)/(1024*1024), cfg.MaxLagBytes)
+
+	return nil
+}
+
 func (s *CDCService) flushBatch(ctx context.Context, batch []ports.CDCEvent, tableConfigs map[string]models.TableConfig) {
+	// Ensure we have an open epoch for stamping rows
+	if err := s.ensureOpenEpoch(ctx); err != nil {
+		s.logger.Error("failed to ensure open epoch: %v", err)
+		return
+	}
+
 	for _, event := range batch {
 		parts := strings.SplitN(event.Table, ".", 2)
-		rawName := event.Table
+		tableName := event.Table
 		if len(parts) == 2 {
-			rawName = parts[1]
+			tableName = parts[1]
 		}
-		rawTable := warehouse.RawTableName(rawName)
+		stageTable := warehouse.StageTableName(tableName)
 
 		var err error
 		switch event.Operation {
 		case "INSERT":
 			if event.NewTuple != nil {
-				err = s.warehouse.InsertRows(ctx, rawTable, []map[string]any{event.NewTuple})
+				row := s.injectEpochMetadata(event.NewTuple, false)
+				err = s.warehouse.InsertRows(ctx, stageTable, []map[string]any{row})
+				if err == nil {
+					s.epochRowCount++
+				}
 			}
 		case "UPDATE":
-			tc, ok := tableConfigs[event.Table]
-			if ok && len(tc.PrimaryKey) > 0 && event.NewTuple != nil {
-				deleteSQL, deleteArgs := buildParameterizedDelete(rawTable, tc.PrimaryKey, event.NewTuple)
-				if deleteSQL != "" {
-					_ = s.warehouse.ExecuteSQLWithArgs(ctx, deleteSQL, deleteArgs...)
+			if event.NewTuple != nil {
+				row := s.injectEpochMetadata(event.NewTuple, false)
+				err = s.warehouse.InsertRows(ctx, stageTable, []map[string]any{row})
+				if err == nil {
+					s.epochRowCount++
 				}
-				err = s.warehouse.InsertRows(ctx, rawTable, []map[string]any{event.NewTuple})
 			}
 		case "DELETE":
+			// Write tombstone row with _deleted=true to stage
 			tc, ok := tableConfigs[event.Table]
 			if ok && len(tc.PrimaryKey) > 0 && event.OldTuple != nil {
-				deleteSQL, deleteArgs := buildParameterizedDelete(rawTable, tc.PrimaryKey, event.OldTuple)
-				if deleteSQL != "" {
-					err = s.warehouse.ExecuteSQLWithArgs(ctx, deleteSQL, deleteArgs...)
+				row := s.injectEpochMetadata(event.OldTuple, true)
+				err = s.warehouse.InsertRows(ctx, stageTable, []map[string]any{row})
+				if err == nil {
+					s.epochRowCount++
 				}
 			}
 		}
@@ -376,6 +455,129 @@ func (s *CDCService) flushBatch(ctx context.Context, batch []ports.CDCEvent, tab
 		if err != nil {
 			s.logger.Error("CDC apply failed for %s %s: %v", event.Operation, event.Table, err)
 		}
+	}
+}
+
+// injectEpochMetadata copies the tuple and adds _epoch and _deleted metadata columns.
+func (s *CDCService) injectEpochMetadata(tuple map[string]any, deleted bool) map[string]any {
+	row := make(map[string]any, len(tuple)+2)
+	for k, v := range tuple {
+		row[k] = v
+	}
+	row[warehouse.ColEpoch] = s.currentEpoch.ID
+	row[warehouse.ColDeleted] = deleted
+	return row
+}
+
+// ensureOpenEpoch gets or creates an open epoch for the current CDC session.
+func (s *CDCService) ensureOpenEpoch(ctx context.Context) error {
+	if s.currentEpoch != nil {
+		return nil
+	}
+
+	// Try to resume an existing open epoch
+	epoch, err := s.state.GetOpenEpoch(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get open epoch: %w", err)
+	}
+	if epoch != nil {
+		s.currentEpoch = epoch
+		s.epochRowCount = epoch.RowCount
+		return nil
+	}
+
+	// Open a new epoch
+	epoch, err = s.state.OpenEpoch(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to open new epoch: %w", err)
+	}
+	s.currentEpoch = epoch
+	s.epochRowCount = 0
+	s.logger.Info("opened new epoch %d", epoch.ID)
+	return nil
+}
+
+// commitEpochIfNeeded checks if the current epoch should be committed based on
+// elapsed time or row count thresholds, and if so commits it and merges any
+// committed epochs.
+func (s *CDCService) commitEpochIfNeeded(ctx context.Context, lastLSN string, tableConfigs map[string]models.TableConfig) {
+	if s.currentEpoch == nil {
+		return
+	}
+
+	elapsed := time.Since(s.currentEpoch.StartedAt)
+	intervalExceeded := elapsed >= time.Duration(s.cdcCfg.EpochIntervalSec)*time.Second
+	rowsExceeded := s.epochRowCount >= int64(s.cdcCfg.EpochMaxRows)
+
+	if !intervalExceeded && !rowsExceeded {
+		return
+	}
+
+	// Commit the current epoch
+	epochID := s.currentEpoch.ID
+	if err := s.state.CommitEpoch(ctx, epochID, lastLSN, s.epochRowCount); err != nil {
+		s.logger.Error("failed to commit epoch %d: %v", epochID, err)
+		return
+	}
+	s.logger.Info("committed epoch %d (rows=%d, elapsed=%s)", epochID, s.epochRowCount, elapsed.Round(time.Second))
+
+	// Clear current epoch so a new one is opened on next flush
+	s.currentEpoch = nil
+	s.epochRowCount = 0
+
+	// Merge committed epochs into raw
+	s.mergeCommittedEpochs(ctx, tableConfigs)
+}
+
+// mergeCommittedEpochs iterates over all committed epochs and merges each one
+// from stage to raw for every configured table, then marks the epoch as merged.
+func (s *CDCService) mergeCommittedEpochs(ctx context.Context, tableConfigs map[string]models.TableConfig) {
+	epochs, err := s.state.GetCommittedEpochs(ctx)
+	if err != nil {
+		s.logger.Error("failed to get committed epochs: %v", err)
+		return
+	}
+
+	for _, epoch := range epochs {
+		merged := true
+		for _, tc := range tableConfigs {
+			tableName := tc.Name
+			parts := strings.SplitN(tableName, ".", 2)
+			if len(parts) == 2 {
+				tableName = parts[1]
+			}
+			stageTable := warehouse.StageTableName(tableName)
+			rawTable := warehouse.RawTableName(tableName)
+
+			if err := s.warehouse.MergeStageToRawForEpoch(ctx, stageTable, rawTable, tc.PrimaryKey, epoch.ID); err != nil {
+				s.logger.Error("failed to merge epoch %d for table %s: %v", epoch.ID, tc.Name, err)
+				merged = false
+				break
+			}
+		}
+
+		if merged {
+			if err := s.state.MarkEpochMerged(ctx, epoch.ID); err != nil {
+				s.logger.Error("failed to mark epoch %d as merged: %v", epoch.ID, err)
+			} else {
+				s.logger.Info("merged epoch %d", epoch.ID)
+			}
+		}
+	}
+}
+
+// TeardownSlot drops the replication slot to prevent orphaned WAL accumulation.
+// This should be called on CDC exit (graceful or crash) when DropSlotOnExit is enabled.
+func (s *CDCService) TeardownSlot(ctx context.Context, cfg models.CDCCfg) {
+	s.logger.Info("dropping replication slot %s (drop_slot_on_exit enabled)", cfg.SlotName)
+	if err := s.cdcSource.Teardown(ctx, cfg.PublicationName, cfg.SlotName); err != nil {
+		s.logger.Error("failed to drop slot %s on exit: %v", cfg.SlotName, err)
+		_ = s.state.AddAuditEntry(ctx, "error", "cdc.slot_drop_failed",
+			fmt.Sprintf("failed to drop slot on exit: %v", err), nil)
+	} else {
+		s.logger.Info("dropped replication slot %s successfully", cfg.SlotName)
+		_ = s.state.AddAuditEntry(ctx, "info", "cdc.slot_dropped",
+			fmt.Sprintf("slot %s dropped on exit to prevent WAL accumulation", cfg.SlotName), nil)
 	}
 }
 

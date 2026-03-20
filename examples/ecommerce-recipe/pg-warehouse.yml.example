@@ -1,0 +1,101 @@
+project:
+  name: ecommerce_warehouse
+
+postgres:
+  url: postgres://user:password@localhost:5432/your_database
+  schema: public
+  max_conns: 2
+  connect_timeout: 10s
+  query_timeout: 120s
+
+duckdb:
+  path: ./warehouse.duckdb
+
+state:
+  path: .pgwh/state.db
+
+sync:
+  mode: incremental
+  default_batch_size: 50000
+  tables:
+    # ── Core e-commerce ──────────────────────────────────────────────
+    - name: public.customers
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: created_at
+
+    - name: public.orders
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: updated_at
+
+    - name: public.order_items
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: id
+
+    - name: public.payments
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: created_at
+
+    - name: public.shipments
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: id
+
+    # ── Product catalog ──────────────────────────────────────────────
+    - name: public.products
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: created_at
+
+    - name: public.product_variants
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: created_at
+
+    - name: public.categories
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: created_at
+
+    - name: public.inventory
+      target_schema: raw
+      primary_key: [variant_id]
+      watermark_column: updated_at
+
+    - name: public.price_history
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: changed_at
+
+    - name: public.reviews
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: created_at
+
+    # ── Customers & addresses ────────────────────────────────────────
+    - name: public.addresses
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: created_at
+
+    # ── Promotions ───────────────────────────────────────────────────
+    - name: public.promotions
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: starts_at
+
+    - name: public.coupon_redemptions
+      target_schema: raw
+      primary_key: [id]
+      watermark_column: redeemed_at
+
+run:
+  default_output_dir: ./out
+  default_file_type: parquet
+
+logging:
+  level: info
+  format: text

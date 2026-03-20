@@ -1,0 +1,112 @@
+# ============================================================================
+# Entity: Promotion
+# Silver table: silver.promotion_usage
+# Grain: one row per promotion
+# ============================================================================
+
+name: promotion
+display_name: Promotion
+description: >
+  Promotion and coupon definitions combined with redemption metrics,
+  customer reach, and order impact analysis.
+table: silver.promotion_usage
+grain: one row per promotion
+primary_key: promotion_id
+
+columns:
+  - name: promotion_id
+    type: integer
+    description: Unique promotion identifier
+    role: primary_key
+
+  - name: promo_code
+    type: text
+    description: Coupon code string
+    synonyms: [code, coupon, coupon_code]
+
+  - name: promo_type
+    type: text
+    description: Discount type
+    enum: [percentage, fixed_amount, free_shipping, buy_x_get_y]
+    synonyms: [type, discount_type]
+
+  - name: promo_value
+    type: numeric
+    description: Discount value (percentage or dollar amount depending on type)
+    synonyms: [value, discount_value]
+
+  - name: min_order
+    type: numeric
+    description: Minimum order total required to use this promotion
+    unit: USD
+
+  - name: max_uses
+    type: integer
+    description: Maximum allowed redemptions (NULL = unlimited)
+    nullable: true
+
+  - name: current_uses
+    type: integer
+    description: Current number of times the promotion has been used
+    synonyms: [uses, times_used]
+
+  - name: starts_at
+    type: timestamp
+    description: Promotion start date
+
+  - name: ends_at
+    type: timestamp
+    description: Promotion end date (NULL = no expiry)
+    nullable: true
+
+  # ── Redemption Metrics ─────────────────────────────────────────────
+  - name: redemption_count
+    type: integer
+    description: Total number of redemptions recorded
+    synonyms: [redemptions, times_redeemed]
+
+  - name: total_discount_given
+    type: numeric
+    description: Total dollar amount discounted across all redemptions
+    unit: USD
+    synonyms: [total_discount, discount_spend]
+
+  - name: avg_discount_per_use
+    type: numeric
+    description: Average discount amount per redemption
+    unit: USD
+
+  - name: first_redeemed_at
+    type: timestamp
+    description: First redemption timestamp
+    nullable: true
+
+  - name: last_redeemed_at
+    type: timestamp
+    description: Most recent redemption timestamp
+    nullable: true
+
+  # ── Order Impact ───────────────────────────────────────────────────
+  - name: avg_order_total_with_coupon
+    type: numeric
+    description: Average order total for orders using this promotion
+    unit: USD
+
+  - name: unique_customers
+    type: integer
+    description: Number of distinct customers who used this promotion
+    synonyms: [customer_reach, customers_reached]
+
+  # ── Derived ────────────────────────────────────────────────────────
+  - name: promo_status
+    type: text
+    description: "Current status: active, expired, exhausted, or scheduled"
+    enum: [active, expired, exhausted, scheduled]
+    synonyms: [status]
+
+example_questions:
+  - "Which promotion gave the most discount?"
+  - "How many active promotions do we have?"
+  - "What is the average discount per coupon use?"
+  - "Which promo code reached the most customers?"
+  - "Show expired promotions that were never used"

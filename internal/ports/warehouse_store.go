@@ -39,6 +39,10 @@ type WarehouseStore interface {
 	// MergeStageToRaw merges staged data into the raw table using primary keys.
 	MergeStageToRaw(ctx context.Context, stageTable string, rawTable string, primaryKeys []string) error
 
+	// MergeStageToRawForEpoch merges staged data for a specific epoch into the raw table.
+	// It handles _deleted tombstones and deduplicates by primary key within the epoch.
+	MergeStageToRawForEpoch(ctx context.Context, stageTable string, rawTable string, primaryKeys []string, epochID int64) error
+
 	// ExportTable exports a warehouse table to a file.
 	ExportTable(ctx context.Context, table string, path string, fileType string) error
 

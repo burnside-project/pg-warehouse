@@ -19,14 +19,39 @@ type RunService struct {
 	warehouse ports.WarehouseStore
 	metadata  ports.MetadataStore
 	logger    *logging.Logger
+
+	// Multi-DB mode fields
+	multiMode      bool
+	sourcePath     string // path to ATTACH as read-only source
+	sourceAlias    string // alias used in ATTACH
 }
 
-// NewRunService creates a new RunService.
+// NewRunService creates a new RunService (single-file mode).
 func NewRunService(wh ports.WarehouseStore, meta ports.MetadataStore, logger *logging.Logger) *RunService {
 	return &RunService{
 		warehouse: wh,
 		metadata:  meta,
 		logger:    logger,
+	}
+}
+
+// MultiDBAttacher is the subset of Warehouse used for ATTACH / DETACH.
+type MultiDBAttacher interface {
+	AttachReadOnly(ctx context.Context, path string, alias string) error
+	DetachDatabase(ctx context.Context, alias string) error
+}
+
+// NewRunServiceMulti creates a RunService that operates in multi-DB mode.
+// sourcePath is the DuckDB file to ATTACH READ_ONLY before executing SQL.
+// sourceAlias is the alias that SQL files should reference (e.g. "warehouse" or "silver").
+func NewRunServiceMulti(wh ports.WarehouseStore, meta ports.MetadataStore, logger *logging.Logger, sourcePath string, sourceAlias string) *RunService {
+	return &RunService{
+		warehouse:   wh,
+		metadata:    meta,
+		logger:      logger,
+		multiMode:   true,
+		sourcePath:  sourcePath,
+		sourceAlias: sourceAlias,
 	}
 }
 
@@ -67,6 +92,21 @@ func (s *RunService) Run(ctx context.Context, sqlFile string, targetTable string
 		Status:      "running",
 	}
 	_ = s.metadata.InsertFeatureRun(ctx, run)
+
+	// In multi-DB mode, attach the source database before execution.
+	if s.multiMode {
+		if attacher, ok := s.warehouse.(MultiDBAttacher); ok {
+			s.logger.Info("attaching %s as %s (READ_ONLY)", s.sourcePath, s.sourceAlias)
+			if err := attacher.AttachReadOnly(ctx, s.sourcePath, s.sourceAlias); err != nil {
+				s.finalizeRun(ctx, run, 0, "failed", err.Error())
+				return 0, fmt.Errorf("failed to attach source db: %w", err)
+			}
+			defer func() {
+				s.logger.Info("detaching %s", s.sourceAlias)
+				_ = attacher.DetachDatabase(ctx, s.sourceAlias)
+			}()
+		}
+	}
 
 	// Execute SQL
 	s.logger.Info("executing SQL file: %s", sqlFile)

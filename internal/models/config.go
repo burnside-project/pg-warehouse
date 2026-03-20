@@ -33,15 +33,31 @@ type StateCfg struct {
 
 // CDCCfg holds CDC replication settings.
 type CDCCfg struct {
-	Enabled         bool     `yaml:"enabled"`
-	PublicationName string   `yaml:"publication_name"`
-	SlotName        string   `yaml:"slot_name"`
-	Tables          []string `yaml:"tables"`
+	Enabled          bool     `yaml:"enabled"`
+	PublicationName  string   `yaml:"publication_name"`
+	SlotName         string   `yaml:"slot_name"`
+	Tables           []string `yaml:"tables"`
+	EpochIntervalSec int      `yaml:"epoch_interval_sec"`
+	EpochMaxRows     int      `yaml:"epoch_max_rows"`
+
+	// Guardrails: prevent disk fill on PostgreSQL
+	MaxLagBytes    int64 `yaml:"max_lag_bytes"`     // Stop CDC if replication lag exceeds this (bytes). 0 = disabled.
+	DropSlotOnExit bool  `yaml:"drop_slot_on_exit"` // Drop replication slot on graceful/crash exit to prevent orphaned WAL accumulation.
+	HealthCheckSec int   `yaml:"health_check_sec"`  // Interval for lag health checks (seconds). 0 = use confirm ticker (10s).
 }
 
 // DuckDBCfg holds DuckDB settings.
 type DuckDBCfg struct {
-	Path string `yaml:"path"`
+	Path      string `yaml:"path"`      // Legacy single-file mode
+	Warehouse string `yaml:"warehouse"` // Multi-file: CDC black box
+	Silver    string `yaml:"silver"`    // Multi-file: development platform
+	Feature   string `yaml:"feature"`   // Multi-file: analytics output
+}
+
+// IsMultiFileMode returns true when the warehouse field is set,
+// indicating that three separate DuckDB files should be used.
+func (d DuckDBCfg) IsMultiFileMode() bool {
+	return d.Warehouse != ""
 }
 
 // SyncCfg holds sync configuration.
