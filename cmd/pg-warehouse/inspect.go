@@ -28,7 +28,8 @@ var inspectTablesCmd = &cobra.Command{
 		}
 		defer app.Close()
 
-		inspector := duckdb.NewInspector(app.WH.DB())
+		// In multi-file mode, inspect silver.duckdb (where developer tables live)
+		inspector := duckdb.NewInspector(app.SilverDB().DB())
 		svc := services.NewInspectService(inspector, app.State)
 
 		tables, err := svc.ListTables(ctx)
@@ -68,7 +69,8 @@ var inspectSchemaCmd = &cobra.Command{
 		}
 		defer app.Close()
 
-		inspector := duckdb.NewInspector(app.WH.DB())
+		// In multi-file mode, inspect silver.duckdb
+		inspector := duckdb.NewInspector(app.SilverDB().DB())
 		svc := services.NewInspectService(inspector, app.State)
 
 		schema, err := svc.DescribeTable(ctx, args[0])

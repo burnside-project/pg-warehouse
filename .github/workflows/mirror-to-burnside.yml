@@ -22,10 +22,10 @@ jobs:
       - name: Install git-filter-repo
         run: pip install git-filter-repo
 
-      - name: Strip SPEC.md and rebrand commits
+      - name: Strip private files and rebrand commits
         run: |
           git filter-repo \
-            --invert-paths --path SPEC.md \
+            --invert-paths --path SPEC.md --path recipes/ --path .claude/ \
             --name-callback 'return b"Burnside Project"' \
             --email-callback 'return b"hello@burnsideproject.ai"' \
             --message-callback 'import re; return re.sub(rb"\nCo-[Aa]uthored-[Bb]y:.*", b"", message)' \

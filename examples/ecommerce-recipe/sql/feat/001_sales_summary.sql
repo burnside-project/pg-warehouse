@@ -1,13 +1,13 @@
 -- ============================================================================
 -- Layer:       feat
--- Target:      feat.sales_summary
+-- Target:      sales_summary
 -- Description: Daily sales KPIs — revenue, order count, AOV, units sold,
 --              payment method breakdown, fulfillment rates. Powers the Sales
 --              dashboard.
--- Sources:     silver.order_enriched
+-- Sources:     order_enriched
 -- ============================================================================
 
-CREATE OR REPLACE TABLE feat.sales_summary AS
+CREATE OR REPLACE TABLE sales_summary AS
 SELECT
     CAST(order_date AS DATE)                        AS sale_date,
 
@@ -44,6 +44,6 @@ SELECT
     -- Coupons
     COUNT(DISTINCT CASE WHEN coupon_discount > 0 THEN order_id END) AS orders_with_coupon
 
-FROM silver.order_enriched
+FROM order_enriched
 GROUP BY CAST(order_date AS DATE)
 ORDER BY sale_date;

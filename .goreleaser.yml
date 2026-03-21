@@ -13,9 +13,13 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
     ldflags:
       - -s -w -X github.com/burnside-project/pg-warehouse/pkg/version.Version={{.Version}}
     overrides:
@@ -35,6 +39,10 @@ builds:
         goarch: arm64
         env:
           - CC=oa64-clang
+      - goos: windows
+        goarch: amd64
+        env:
+          - CC=x86_64-w64-mingw32-gcc
 
 archives:
   - id: default

@@ -1,13 +1,13 @@
 -- ============================================================================
 -- Layer:       feat
--- Target:      feat.promotion_effectiveness
+-- Target:      promotion_effectiveness
 -- Description: Promotion ROI analysis — redemption rates, discount impact,
 --              customer reach, and status tracking. Powers the Marketing
 --              dashboard.
--- Sources:     silver.promotion_usage
+-- Sources:     promotion_usage
 -- ============================================================================
 
-CREATE OR REPLACE TABLE feat.promotion_effectiveness AS
+CREATE OR REPLACE TABLE promotion_effectiveness AS
 SELECT
     promotion_id,
     promo_code,
@@ -50,5 +50,5 @@ SELECT
         ELSE                                              'low_reach'
     END                                             AS reach_tier
 
-FROM silver.promotion_usage
+FROM promotion_usage
 ORDER BY total_discount_given DESC;

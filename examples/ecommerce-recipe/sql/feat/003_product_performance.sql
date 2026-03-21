@@ -1,12 +1,12 @@
 -- ============================================================================
 -- Layer:       feat
--- Target:      feat.product_performance
+-- Target:      product_performance
 -- Description: Product rankings by revenue, volume, rating, and inventory
 --              health. Powers the Product dashboard.
--- Sources:     silver.product_catalog, silver.product_sales
+-- Sources:     product_catalog, product_sales
 -- ============================================================================
 
-CREATE OR REPLACE TABLE feat.product_performance AS
+CREATE OR REPLACE TABLE product_performance AS
 SELECT
     pc.product_id,
     pc.product_name,
@@ -44,7 +44,7 @@ SELECT
     RANK() OVER (ORDER BY COALESCE(ps.units_sold, 0) DESC)       AS volume_rank,
     RANK() OVER (ORDER BY COALESCE(pc.avg_rating, 0) DESC)       AS rating_rank
 
-FROM silver.product_catalog pc
-LEFT JOIN silver.product_sales ps
+FROM product_catalog pc
+LEFT JOIN product_sales ps
     ON pc.product_id = ps.product_id
 ORDER BY total_revenue DESC;

@@ -10,7 +10,7 @@ Mirror PostgreSQL tables into a local DuckDB warehouse.
 postgres:
   url: postgres://user:pass@localhost:5432/mydb
 duckdb:
-  path: ./warehouse.duckdb
+  raw: ./raw.duckdb
 sync:
   tables:
     - name: public.orders

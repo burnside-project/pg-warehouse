@@ -1,12 +1,12 @@
 -- ============================================================================
 -- Layer:       feat
--- Target:      feat.customer_analytics
+-- Target:      customer_analytics
 -- Description: Customer cohort analysis, LTV estimates, geographic breakdown,
 --              segmentation, and activity status. Powers the Customer dashboard.
--- Sources:     silver.customer_360
+-- Sources:     customer_360
 -- ============================================================================
 
-CREATE OR REPLACE TABLE feat.customer_analytics AS
+CREATE OR REPLACE TABLE customer_analytics AS
 SELECT
     customer_id,
     customer_name,
@@ -54,5 +54,5 @@ SELECT
         ELSE                                                                   'churned'
     END                                             AS activity_status
 
-FROM silver.customer_360
+FROM customer_360
 ORDER BY lifetime_revenue DESC;

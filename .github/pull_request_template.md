@@ -1,9 +1,3 @@
-> **This repository is a read-only mirror.**
-> Please open pull requests at the source repository:
-> https://github.com/dataalgebra-engineering/burnside-project-pg-warehouse-oss
-
----
-
 ## Summary
 
 <!-- What does this PR do and why? -->

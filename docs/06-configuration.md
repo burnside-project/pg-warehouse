@@ -16,7 +16,9 @@ postgres:
   query_timeout: 30s
 
 duckdb:
-  path: ./warehouse.duckdb
+  raw: ./raw.duckdb
+  silver: ./silver.duckdb
+  feature: ./feature.duckdb
 
 state:
   path: .pgwh/state.db

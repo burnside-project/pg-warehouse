@@ -70,6 +70,11 @@ func Error(msg string) {
 	fmt.Println(colorize(colorRed, "  FAIL  "+msg))
 }
 
+// Danger prints a red bold danger message for access violations.
+func Danger(msg string) {
+	fmt.Println(colorize(colorRed+colorBold, "  DANGER  "+msg))
+}
+
 // Info prints a cyan informational message.
 func Info(msg string) {
 	fmt.Println(colorize(colorCyan, "  INFO  "+msg))

@@ -20,17 +20,19 @@ make build
 cp examples/ecommerce-recipe/pg-warehouse.yml.example pg-warehouse.yml
 # Edit pg-warehouse.yml with your PostgreSQL connection string
 
-# 3. Initialize the warehouse
+# 3. Initialize the warehouse (creates raw.duckdb, silver.duckdb, feature.duckdb)
 ./pg-warehouse init --config pg-warehouse.yml
 
-# 4. Sync source tables into raw.*
-./pg-warehouse sync --config pg-warehouse.yml
+# 4. Start CDC streaming (runs continuously in background)
+nohup ./pg-warehouse cdc start --config pg-warehouse.yml > cdc.log 2>&1 &
 
-# 5. Preview feat tables (no writes)
-./examples/ecommerce-recipe/run-pipeline.sh --preview
+# 5. Run full pipeline: refresh raw → silver → feat → Parquet export
+./pg-warehouse run --refresh --pipeline --promote --version 1
 
-# 6. Run full pipeline (silver → feat → parquet)
-./examples/ecommerce-recipe/run-pipeline.sh
+# Or use the recipe script with more options:
+./examples/ecommerce-recipe/run-pipeline.sh              # full pipeline
+./examples/ecommerce-recipe/run-pipeline.sh --preview     # preview only
+./examples/ecommerce-recipe/run-pipeline.sh --silver-only # silver layer only
 ```
 
 ## Source Schema
@@ -99,25 +101,25 @@ This recipe answers the following analytics questions, organized by dashboard. E
 
 | Question | Feature Table | Dashboard Tile |
 |----------|---------------|----------------|
-| What is our total revenue, order count, and average order value? | `feat.sales_summary` | KPI cards (Revenue, Orders, AOV, Units) |
-| What does our revenue trajectory look like? | `feat.sales_summary` | Revenue Trend (line chart: revenue + orders over time) |
-| How do customers prefer to pay? | `feat.sales_summary` | Payment Methods (doughnut: credit card / PayPal / bank transfer) |
-| What percentage of orders are delivered? | `feat.sales_summary` | Fulfillment (doughnut: delivered / in-transit / label created) |
+| What is our total revenue, order count, and average order value? | `sales_summary` | KPI cards (Revenue, Orders, AOV, Units) |
+| What does our revenue trajectory look like? | `sales_summary` | Revenue Trend (line chart: revenue + orders over time) |
+| How do customers prefer to pay? | `sales_summary` | Payment Methods (doughnut: credit card / PayPal / bank transfer) |
+| What percentage of orders are delivered? | `sales_summary` | Fulfillment (doughnut: delivered / in-transit / label created) |
 
 <details>
 <summary>Entity lineage and business logic</summary>
 
 **Data flow:**
 ```
-raw.orders                    order_total = subtotal + tax + shipping
-  + raw.order_items           qty, unit_price, line_total
-  + raw.payments              method, status (latest per order via DISTINCT ON)
-  + raw.shipments             carrier, status (latest per order via DISTINCT ON)
-  + raw.coupon_redemptions    discount_amount (aggregated per order)
+v0.orders                     order_total = subtotal + tax + shipping
+  + v0.order_items            qty, unit_price, line_total
+  + v0.payments               method, status (latest per order via DISTINCT ON)
+  + v0.shipments              carrier, status (latest per order via DISTINCT ON)
+  + v0.coupon_redemptions     discount_amount (aggregated per order)
       |
-silver.order_enriched         ONE ROW PER ORDER, all dimensions joined
+v1.order_enriched             ONE ROW PER ORDER, all dimensions joined
       |
-feat.sales_summary            ONE ROW PER DAY, aggregated KPIs
+v1.sales_summary              ONE ROW PER DAY, aggregated KPIs
 ```
 
 **Entities involved:**
@@ -140,25 +142,25 @@ feat.sales_summary            ONE ROW PER DAY, aggregated KPIs
 
 | Question | Feature Table | Dashboard Tile |
 |----------|---------------|----------------|
-| How are customers distributed by purchase frequency? | `feat.customer_analytics` | Customer Segments (bar chart: loyal / regular / occasional / one-time) |
-| How many customers are at risk of churning? | `feat.customer_analytics` | Activity Status (doughnut: active / cooling / at-risk / churned) |
-| Who are our most valuable customers? | `feat.customer_analytics` | Top Customers (table: name, segment, revenue, LTV) |
-| Which signup months produce the highest-value customers? | `feat.customer_analytics` | Signup Cohorts (bar chart: avg revenue + count per cohort) |
+| How are customers distributed by purchase frequency? | `customer_analytics` | Customer Segments (bar chart: loyal / regular / occasional / one-time) |
+| How many customers are at risk of churning? | `customer_analytics` | Activity Status (doughnut: active / cooling / at-risk / churned) |
+| Who are our most valuable customers? | `customer_analytics` | Top Customers (table: name, segment, revenue, LTV) |
+| Which signup months produce the highest-value customers? | `customer_analytics` | Signup Cohorts (bar chart: avg revenue + count per cohort) |
 
 <details>
 <summary>Entity lineage and business logic</summary>
 
 **Data flow:**
 ```
-raw.customers                 email, name, signup date
-  + raw.orders                order history per customer
-    + raw.order_items         item-level detail for lifetime metrics
-  + raw.addresses             default shipping address (is_default DESC, latest)
-  + raw.reviews               review count, avg rating given
+v0.customers                  email, name, signup date
+  + v0.orders                 order history per customer
+    + v0.order_items          item-level detail for lifetime metrics
+  + v0.addresses              default shipping address (is_default DESC, latest)
+  + v0.reviews                review count, avg rating given
       |
-silver.customer_360           ONE ROW PER CUSTOMER
+v1.customer_360               ONE ROW PER CUSTOMER
       |
-feat.customer_analytics       ONE ROW PER CUSTOMER + derived segments, LTV, activity
+v1.customer_analytics         ONE ROW PER CUSTOMER + derived segments, LTV, activity
 ```
 
 **Entities involved:**
@@ -205,27 +207,26 @@ This is a simple LTV — it does not account for churn probability or discount r
 
 | Question | Feature Table | Dashboard Tile |
 |----------|---------------|----------------|
-| What are our best sellers? | `feat.product_performance` | Top Products (table: rank, name, orders, units, revenue, rating) |
-| Which categories generate the most revenue? | `feat.product_performance` | Revenue by Category (horizontal bar chart) |
+| What are our best sellers? | `product_performance` | Top Products (table: rank, name, orders, units, revenue, rating) |
+| Which categories generate the most revenue? | `product_performance` | Revenue by Category (horizontal bar chart) |
 
 <details>
 <summary>Entity lineage and business logic</summary>
 
 **Data flow:**
 ```
-raw.products                  name, base_price, status
-  + raw.product_variants      SKUs, price overrides, weight
-  + raw.categories            category hierarchy (self-referencing via parent_id)
-  + raw.inventory             qty_available, qty_reserved (per variant per warehouse)
-  + raw.price_history         historical price changes (per variant)
-  + raw.reviews               ratings, review text
+v0.products                   name, base_price, status
+  + v0.product_variants       SKUs, price overrides, weight
+  + v0.categories             category hierarchy (self-referencing via parent_id)
+  + v0.inventory              qty_available, qty_reserved (per variant per warehouse)
+  + v0.price_history          historical price changes (per variant)
+  + v0.reviews                ratings, review text
       |
-silver.product_catalog        ONE ROW PER PRODUCT (catalog + inventory + reviews)
+v1.product_catalog            ONE ROW PER PRODUCT (catalog + inventory + reviews)
       |
-  + raw.order_items           sales data (variant_id -> product_id via product_variants)
-  + silver.order_enriched     confirms order is valid
+  + v0.product_sales          per-product sales aggregates (from v0.order_items)
       |
-feat.product_performance      ONE ROW PER PRODUCT + sales rankings
+v1.product_performance        ONE ROW PER PRODUCT + sales rankings
 ```
 
 **Entities involved:**
@@ -258,22 +259,22 @@ order_items.variant_id
 
 | Question | Feature Table | Dashboard Tile |
 |----------|---------------|----------------|
-| How many customers do our promos reach? | `feat.promotion_effectiveness` | Reach Tiers (doughnut: high / medium / low reach) |
-| Where is the discount budget going? | `feat.promotion_effectiveness` | Discount by Reach (bar chart) |
-| What is the ROI per promotion code? | `feat.promotion_effectiveness` | Promotion Details (table: code, redemptions, discount given, avg order) |
+| How many customers do our promos reach? | `promotion_effectiveness` | Reach Tiers (doughnut: high / medium / low reach) |
+| Where is the discount budget going? | `promotion_effectiveness` | Discount by Reach (bar chart) |
+| What is the ROI per promotion code? | `promotion_effectiveness` | Promotion Details (table: code, redemptions, discount given, avg order) |
 
 <details>
 <summary>Entity lineage and business logic</summary>
 
 **Data flow:**
 ```
-raw.promotions                code, type (percentage/fixed), value, limits, dates
-  + raw.coupon_redemptions    per-use: promotion_id, order_id, customer_id, discount_amount
-    + raw.orders              order total (measures impact on basket size)
+v0.promotions                 code, type (percentage/fixed), value, limits, dates
+  + v0.coupon_redemptions     per-use: promotion_id, order_id, customer_id, discount_amount
+    + v0.orders               order total (measures impact on basket size)
       |
-silver.promotion_usage        ONE ROW PER PROMOTION + redemption aggregates
+v1.promotion_usage            ONE ROW PER PROMOTION + redemption aggregates
       |
-feat.promotion_effectiveness  ONE ROW PER PROMOTION + derived reach/utilization
+v1.promotion_effectiveness    ONE ROW PER PROMOTION + derived reach/utilization
 ```
 
 **Entities involved:**
@@ -312,20 +313,18 @@ otherwise                    = "active"
 
 | Question | Feature Table | Dashboard Tile |
 |----------|---------------|----------------|
-| What is the overall inventory health distribution? | `feat.inventory_health` | Stock Health (bar chart: healthy / reorder soon / reorder urgent) |
-| Which products need immediate restocking? | `feat.inventory_health` | Reorder Alerts (table: product, available, velocity, days-of-stock) |
+| What is the overall inventory health distribution? | `inventory_health` | Stock Health (bar chart: healthy / reorder soon / reorder urgent) |
+| Which products need immediate restocking? | `inventory_health` | Reorder Alerts (table: product, available, velocity, days-of-stock) |
 
 <details>
 <summary>Entity lineage and business logic</summary>
 
 **Data flow:**
 ```
-silver.product_catalog        stock levels (total_available, total_reserved)
-  + raw.order_items           recent sales velocity (last 30 days)
-    + raw.product_variants    variant_id -> product_id mapping
-    + raw.orders              placed_at filter for 30-day window
+v0.product_catalog            stock levels (total_available, total_reserved)
+  + v0.product_sales          recent sales velocity (units_sold_30d)
       |
-feat.inventory_health         ONE ROW PER ACTIVE PRODUCT + reorder signals
+v1.inventory_health           ONE ROW PER ACTIVE PRODUCT + reorder signals
 ```
 
 **Entities involved:**
@@ -405,29 +404,32 @@ otherwise                              = "healthy"
        |                                 |shipments |
        |                                 +----------+
 
-  14 raw tables -> 4 silver tables -> 5 feat tables -> 5 dashboard tabs + AI Q&A
+  14 raw tables → 5 silver (v1.*) → 5 feat (v1.*) → 5 dashboard tabs + AI Q&A
 ```
 
 ## Pipeline: Schema Mapping
 
-### Silver Layer (curated, joined)
+### Silver Layer (in silver.duckdb, v1.*)
 
-| Silver Table | Description | Raw Sources |
-|-------------|-------------|-------------|
-| `silver.order_enriched` | Denormalized orders (1 row/order) with items, payments, shipments, coupons | orders, order_items, payments, shipments, coupon_redemptions |
-| `silver.customer_360` | Customer profiles with lifetime order metrics, address, and review activity | customers, orders, order_items, addresses, reviews |
-| `silver.product_catalog` | Products with variants, inventory, price history, and review metrics | products, product_variants, categories, inventory, price_history, reviews |
-| `silver.promotion_usage` | Promotion definitions with redemption metrics and order impact | promotions, coupon_redemptions, orders |
+SQL files are generic — no schema prefixes. pg-warehouse wires `v0` (source) and `v1` (target) transparently.
 
-### Feat Layer (analytics-ready, exported to Parquet)
+| Table | Description | Reads from v0.* |
+|-------|-------------|-----------------|
+| `order_enriched` | Denormalized orders (1 row/order) with items, payments, shipments, coupons | orders, order_items, payments, shipments, coupon_redemptions |
+| `customer_360` | Customer profiles with lifetime order metrics, address, and review activity | customers, orders, order_items, addresses, reviews |
+| `product_catalog` | Products with variants, inventory, price history, and review metrics | products, product_variants, categories, inventory, price_history, reviews |
+| `promotion_usage` | Promotion definitions with redemption metrics and order impact | promotions, coupon_redemptions, orders |
+| `product_sales` | Per-product sales aggregates with 30-day velocity | order_items, product_variants, orders |
 
-| Feat Table | Description | Dashboard |
-|-----------|-------------|-----------|
-| `feat.sales_summary` | Daily KPIs: revenue, AOV, payment mix, fulfillment rates | Sales |
-| `feat.customer_analytics` | Cohort analysis, LTV estimates, segmentation, activity status | Customer |
-| `feat.product_performance` | Product rankings by revenue, volume, and rating | Product |
-| `feat.promotion_effectiveness` | Promotion ROI, utilization rates, reach tiers | Marketing |
-| `feat.inventory_health` | Stock levels, sell-through velocity, reorder signals | Operations |
+### Feat Layer (in feature.duckdb, v1.* + Parquet export)
+
+| Table | Description | Dashboard |
+|-------|-------------|-----------|
+| `sales_summary` | Daily KPIs: revenue, AOV, payment mix, fulfillment rates | Sales |
+| `customer_analytics` | Cohort analysis, LTV estimates, segmentation, activity status | Customer |
+| `product_performance` | Product rankings by revenue, volume, and rating | Product |
+| `promotion_effectiveness` | Promotion ROI, utilization rates, reach tiers | Marketing |
+| `inventory_health` | Stock levels, sell-through velocity, reorder signals | Operations |
 
 ## Parquet Outputs
 
@@ -603,7 +605,7 @@ Dashboard renders answer + SQL + raw data table
 
 To adapt this recipe for your own e-commerce database:
 
-1. **Column names differ?** Edit the SQL files in `sql/silver/` to match your schema
+1. **Column names differ?** Edit the SQL files in `sql/silver/v1/` to match your schema
 2. **Missing tables?** Remove the corresponding silver/feat SQL files and sync entries
 3. **Additional tables?** Add new silver SQL files following the naming convention (`NNN_table_name.sql`)
 4. **Different metrics?** Edit the feat SQL files to change aggregations or add new KPIs

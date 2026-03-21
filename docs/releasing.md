@@ -36,7 +36,15 @@ During development the version defaults to `dev`. Tagged builds receive the Git 
    git push origin v1.0.0
    ```
 
-4. **GoReleaser runs automatically** via the GitHub Actions `release` workflow. It builds binaries for linux/darwin (amd64/arm64), publishes a GitHub Release, and updates the Homebrew tap at `burnside-project/homebrew-tap`.
+4. **GoReleaser runs automatically** via the GitHub Actions `release` workflow. It builds binaries for all platforms, publishes a GitHub Release, and updates the Homebrew tap at `burnside-project/homebrew-tap`.
+
+   | OS | Arch | Archive |
+   |----|------|---------|
+   | Linux | amd64 | pg-warehouse_VERSION_linux_amd64.tar.gz |
+   | Linux | arm64 | pg-warehouse_VERSION_linux_arm64.tar.gz |
+   | macOS | amd64 (Intel) | pg-warehouse_VERSION_darwin_amd64.tar.gz |
+   | macOS | arm64 (Apple Silicon) | pg-warehouse_VERSION_darwin_arm64.tar.gz |
+   | Windows | amd64 | pg-warehouse_VERSION_windows_amd64.zip |
 
 5. **Verify the Homebrew tap** was updated:
    ```bash
