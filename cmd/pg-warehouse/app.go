@@ -46,6 +46,15 @@ func (a *App) SilverDB() *duckdb.Warehouse {
 	return a.WH
 }
 
+// RawDB returns the raw CDC warehouse. In multi-file mode it returns
+// the dedicated warehouse instance; otherwise it returns the single WH.
+func (a *App) RawDB() *duckdb.Warehouse {
+	if a.Multi != nil {
+		return a.Multi.Warehouse() // Warehouse() in multidb.go returns the raw db
+	}
+	return a.WH
+}
+
 // FeatureDB returns the feature analytics output warehouse.
 // In single-file mode it returns the single WH (all schemas colocated).
 func (a *App) FeatureDB() *duckdb.Warehouse {
