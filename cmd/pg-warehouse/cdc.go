@@ -8,7 +8,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/burnside-project/pg-warehouse/internal/adapters/fileconfig"
 	"github.com/burnside-project/pg-warehouse/internal/adapters/postgres"
+	"github.com/burnside-project/pg-warehouse/internal/adapters/sqlitestate"
+	"github.com/burnside-project/pg-warehouse/internal/config"
+	"github.com/burnside-project/pg-warehouse/internal/logging"
 	"github.com/burnside-project/pg-warehouse/internal/services"
 	"github.com/spf13/cobra"
 )
@@ -18,13 +22,14 @@ var cdcCmd = &cobra.Command{
 	Short: "Manage PostgreSQL Change Data Capture",
 }
 
+
 var cdcSetupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Create publication and replication slot",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
-		app, err := NewApp(ctx, cfgFile)
+		app, err := NewAppCDC(ctx, cfgFile)
 		if err != nil {
 			return err
 		}
@@ -39,7 +44,7 @@ var cdcSetupCmd = &cobra.Command{
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
 		defer func() { _ = cdcAdapter.Close() }()
 
-		svc := services.NewCDCService(cdcAdapter, app.WarehouseDB(), app.State, pgSource, app.Logger)
+		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
 		if err := svc.Setup(ctx, app.Cfg.CDC); err != nil {
 			return err
 		}
@@ -58,7 +63,7 @@ var cdcTeardownCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
-		app, err := NewApp(ctx, cfgFile)
+		app, err := NewAppCDC(ctx, cfgFile)
 		if err != nil {
 			return err
 		}
@@ -73,7 +78,7 @@ var cdcTeardownCmd = &cobra.Command{
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
 		defer func() { _ = cdcAdapter.Close() }()
 
-		svc := services.NewCDCService(cdcAdapter, app.WarehouseDB(), app.State, pgSource, app.Logger)
+		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
 		if err := svc.Teardown(ctx, app.Cfg.CDC); err != nil {
 			return err
 		}
@@ -118,7 +123,7 @@ Example workflow:
 			cancel()
 		}()
 
-		app, err := NewApp(ctx, cfgFile)
+		app, err := NewAppCDC(ctx, cfgFile)
 		if err != nil {
 			return err
 		}
@@ -133,7 +138,7 @@ Example workflow:
 		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
 		defer func() { _ = cdcAdapter.Close() }()
 
-		svc := services.NewCDCService(cdcAdapter, app.WarehouseDB(), app.State, pgSource, app.Logger)
+		svc := services.NewCDCService(cdcAdapter, app.WH, app.State, pgSource, app.Logger)
 
 		// Merge CLI flag with config (CLI flag takes precedence)
 		dropSlot := app.Cfg.CDC.DropSlotOnExit || cdcDropSlotOnExit
@@ -177,24 +182,33 @@ var cdcStatusCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
-		app, err := NewApp(ctx, cfgFile)
+		// Status only needs PostgreSQL + SQLite, not DuckDB
+		loader := fileconfig.NewLoader()
+		cfg, err := loader.Load(cfgFile)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to load config: %w", err)
 		}
-		defer app.Close()
+		config.ApplyDefaults(cfg)
+		logger := logging.NewLogger(cfg.Logging.Level, cfg.Logging.Format)
 
-		pgSource, err := app.NewPostgresSource()
+		state, err := sqlitestate.NewStore(cfg.State.Path)
+		if err != nil {
+			return fmt.Errorf("failed to open state db: %w", err)
+		}
+		defer func() { _ = state.Close() }()
+
+		pgSource, err := postgres.NewSource(cfg.Postgres)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = pgSource.Close() }()
 
-		cdcAdapter := postgres.NewCDCAdapter(app.Cfg.Postgres.URL, pgSource.Pool())
+		cdcAdapter := postgres.NewCDCAdapter(cfg.Postgres.URL, pgSource.Pool())
 		defer func() { _ = cdcAdapter.Close() }()
 
-		svc := services.NewCDCService(cdcAdapter, app.WarehouseDB(), app.State, pgSource, app.Logger)
+		svc := services.NewCDCService(cdcAdapter, nil, state, pgSource, logger)
 
-		status, states, err := svc.Status(ctx, app.Cfg.CDC)
+		status, states, err := svc.Status(ctx, cfg.CDC)
 		if err != nil {
 			return err
 		}

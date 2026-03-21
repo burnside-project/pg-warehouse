@@ -5,12 +5,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/burnside-project/pg-warehouse/internal/domain/feature"
 	"github.com/burnside-project/pg-warehouse/internal/services"
 	"github.com/burnside-project/pg-warehouse/internal/ui"
 	"github.com/spf13/cobra"
+)
+
+// createTableRe matches CREATE OR REPLACE TABLE [schema.]table AS
+// Group 1 = optional schema, Group 2 = table name
+var createTableRe = regexp.MustCompile(
+	`(?i)(CREATE\s+OR\s+REPLACE\s+TABLE\s+)(?:(\w+)\.)?(\w+)(\s+AS\b)`,
 )
 
 // isFeatTarget returns true when the target table belongs to the feat schema.
@@ -18,14 +26,15 @@ func isFeatTarget(table string) bool {
 	return strings.HasPrefix(strings.ToLower(table), "feat.")
 }
 
-// deriveTargetFromFilename extracts the target table from a SQL filename.
-// sql/silver/v1/001_order_enriched.sql → v1.order_enriched
-// sql/feat/001_sales_summary.sql → feat.sales_summary
-func deriveTargetFromFilename(sqlFile string) string {
-	base := filepath.Base(sqlFile)           // 001_order_enriched.sql
-	name := strings.TrimSuffix(base, ".sql") // 001_order_enriched
+// isFeatDir returns true if the directory path looks like a feature layer directory.
+func isFeatDir(dir string) bool {
+	d := strings.ToLower(filepath.Clean(dir))
+	return strings.Contains(d, "feat")
+}
 
-	// Strip numeric prefix: 001_order_enriched → order_enriched
+// stripNumericPrefix removes a leading NNN_ prefix from a filename stem.
+// 001_order_enriched → order_enriched
+func stripNumericPrefix(name string) string {
 	for i, c := range name {
 		if c == '_' {
 			allDigits := true
@@ -36,26 +45,85 @@ func deriveTargetFromFilename(sqlFile string) string {
 				}
 			}
 			if allDigits {
-				name = name[i+1:]
-				break
+				return name[i+1:]
 			}
 		}
 	}
+	return name
+}
 
-	// Determine schema from directory path
-	dir := filepath.Base(filepath.Dir(sqlFile)) // v1, feat, etc.
+// deriveTargetFromFilename extracts the target table from a SQL filename.
+// sql/silver/v1/001_order_enriched.sql → v1.order_enriched
+// sql/silver/001_order_enriched.sql    → v1.order_enriched (defaults to v1 for silver)
+// sql/feat/001_sales_summary.sql       → v1.sales_summary (defaults to v1 for feat)
+func deriveTargetFromFilename(sqlFile string) string {
+	base := filepath.Base(sqlFile)
+	name := strings.TrimSuffix(base, ".sql")
+	name = stripNumericPrefix(name)
+
+	dir := filepath.Base(filepath.Dir(sqlFile))
+	if dir == "silver" || dir == "feat" {
+		dir = "v1"
+	}
+
 	return dir + "." + name
 }
 
+// deriveTargetSchema extracts the target schema from a --sql-dir path.
+// sql/silver/v1/ → v1, sql/silver/v2/ → v2, sql/silver/ → v1, sql/feat/ → v1
+func deriveTargetSchema(dir string) string {
+	base := filepath.Base(filepath.Clean(dir))
+	// If directory is a version directory (v1, v2, ...), use it directly
+	if strings.HasPrefix(base, "v") && len(base) > 1 {
+		allDigits := true
+		for _, c := range base[1:] {
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return base
+		}
+	}
+	// Default: silver/ and feat/ both target v1
+	return "v1"
+}
+
+// deriveDuckDBLayer determines which DuckDB file to target based on directory path.
+// Returns "silver" or "feature".
+func deriveDuckDBLayer(dir string) string {
+	if isFeatDir(dir) {
+		return "feature"
+	}
+	return "silver"
+}
+
+// rewriteSQL rewrites generic SQL for schema-qualified execution.
+// 1. Rewrites CREATE OR REPLACE TABLE [schema.]name AS → CREATE OR REPLACE TABLE target.name AS
+// 2. Returns the rewritten SQL (caller sets search_path separately via SetSchema).
+func rewriteSQL(sql string, targetSchema string) string {
+	return createTableRe.ReplaceAllString(sql,
+		"${1}"+targetSchema+".${3}${4}")
+}
+
+// validateTargetAccess checks that the target schema is not reserved.
+// Returns an error with a DANGER message if access is blocked.
+func validateTargetAccess(targetSchema string) error {
+	return feature.ValidateTargetSchema(targetSchema)
+}
+
 var (
-	runSQLFile     string
-	runTargetTable string
-	runOutputPath  string
-	runFileType    string
-	runRefresh     bool
-	runPipeline    bool
-	runPromote     bool
-	runVersion     int
+	runSQLFile       string
+	runSQLDir        string
+	runTargetTable   string
+	runTargetSchema  string
+	runOutputPath    string
+	runFileType      string
+	runRefresh       bool
+	runPipeline      bool
+	runPromote       bool
+	runVersion       int
 )
 
 var runCmd = &cobra.Command{
@@ -64,16 +132,37 @@ var runCmd = &cobra.Command{
 	Long: `Run SQL transformations against the warehouse.
 
 Modes:
-  --refresh     Snapshot raw.duckdb into silver.duckdb v0 (refresh layer)
-  --pipeline    Discover and run all SQL files in sql/silver/v1/ and sql/feat/
-  --promote     Swap current.* views to point at the specified --version
-  --sql-file    Run a single SQL file (legacy mode)
+  --refresh        Snapshot raw.duckdb into silver.duckdb v0 (refresh layer)
+  --pipeline       Discover and run all SQL in sql/silver/ and sql/feat/
+  --sql-dir DIR    Run all SQL files in a directory (sorted by numeric prefix)
+  --sql-file FILE  Run a single SQL file
+  --promote        Swap current.* views to point at the specified --version
 
-If none of --refresh, --pipeline, --promote, or --sql-file are provided, help is shown.`,
+Schema wiring (for --sql-dir and --pipeline):
+  SQL files are generic — no schema prefixes needed. pg-warehouse sets the
+  source schema (v0) for reads and rewrites CREATE TABLE to the target schema.
+
+  --target-schema  Override the target schema (default: derived from directory)
+
+Reserved schemas (DANGER — will be rejected):
+  raw, stage, v0, _meta — these are managed by pg-warehouse internally.
+
+Examples:
+  pg-warehouse run --refresh --pipeline --promote
+  pg-warehouse run --sql-dir ./sql/silver/
+  pg-warehouse run --sql-dir ./sql/feat/ --target-schema v2
+  pg-warehouse run --sql-file ./sql/silver/001_order_enriched.sql`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// If no mode flag is provided, show help.
-		if !runRefresh && !runPipeline && !runPromote && runSQLFile == "" {
+		if !runRefresh && !runPipeline && !runPromote && runSQLFile == "" && runSQLDir == "" {
 			return cmd.Help()
+		}
+
+		// Validate --target-schema if provided
+		if runTargetSchema != "" {
+			if err := validateTargetAccess(runTargetSchema); err != nil {
+				ui.Danger(err.Error())
+				return err
+			}
 		}
 
 		ctx := context.Background()
@@ -98,6 +187,13 @@ If none of --refresh, --pipeline, --promote, or --sql-file are provided, help is
 			}
 		}
 
+		// --sql-dir: run all SQL files in a directory
+		if runSQLDir != "" {
+			if err := doSQLDir(ctx, app); err != nil {
+				return err
+			}
+		}
+
 		// --promote: swap current.* views
 		if runPromote {
 			if err := doPromote(ctx, app); err != nil {
@@ -105,7 +201,7 @@ If none of --refresh, --pipeline, --promote, or --sql-file are provided, help is
 			}
 		}
 
-		// --sql-file: run a single file (legacy)
+		// --sql-file: run a single file
 		if runSQLFile != "" {
 			if err := doSingleRun(ctx, app); err != nil {
 				return err
@@ -133,64 +229,112 @@ func doRefresh(ctx context.Context, app *App) error {
 	return nil
 }
 
-// doPipeline discovers SQL files in sql/silver/v1/ and sql/feat/, then runs each.
+// doPipeline discovers SQL files in sql/silver/ and sql/feat/, then runs each.
 func doPipeline(ctx context.Context, app *App) error {
-	fileType := runFileType
-	if fileType == "" {
-		fileType = app.Cfg.Run.DefaultFileType
+	// Phase 1: silver
+	silverDir := "sql/silver/v1"
+	if _, err := os.Stat(silverDir); os.IsNotExist(err) {
+		silverDir = "sql/silver"
+	}
+	if err := runDir(ctx, app, silverDir, "v1", "v0", false); err != nil {
+		return err
 	}
 
-	// Phase 1: silver/v1 SQL files
-	silverFiles, err := filepath.Glob("sql/silver/v1/*.sql")
-	if err != nil {
-		return fmt.Errorf("glob silver files: %w", err)
-	}
-	sort.Strings(silverFiles)
-
-	for _, sqlFile := range silverFiles {
-		target := deriveTargetFromFilename(sqlFile)
-		ui.Info(fmt.Sprintf("Pipeline [silver]: %s -> %s", sqlFile, target))
-
-		svc := buildRunService(app, target)
-		rowCount, err := svc.Run(ctx, sqlFile, target, "", "")
-		if err != nil {
-			return fmt.Errorf("pipeline step %s failed: %w", sqlFile, err)
-		}
-		ui.Success(fmt.Sprintf("  %s: %d rows", target, rowCount))
-	}
-
-	// Phase 2: feat SQL files
-	featFiles, err := filepath.Glob("sql/feat/*.sql")
-	if err != nil {
-		return fmt.Errorf("glob feat files: %w", err)
-	}
-	sort.Strings(featFiles)
-
-	for _, sqlFile := range featFiles {
-		target := deriveTargetFromFilename(sqlFile)
-		ui.Info(fmt.Sprintf("Pipeline [feat]: %s -> %s", sqlFile, target))
-
-		svc := buildRunService(app, target)
-
-		// For feat targets, derive output path if a default output dir is configured.
-		outputPath := ""
-		if app.Cfg.Run.DefaultOutputDir != "" {
-			base := strings.TrimSuffix(filepath.Base(sqlFile), ".sql")
-			ft := fileType
-			if ft == "" {
-				ft = "parquet"
-			}
-			outputPath = filepath.Join(app.Cfg.Run.DefaultOutputDir, base+"."+ft)
-		}
-
-		rowCount, err := svc.Run(ctx, sqlFile, target, outputPath, fileType)
-		if err != nil {
-			return fmt.Errorf("pipeline step %s failed: %w", sqlFile, err)
-		}
-		ui.Success(fmt.Sprintf("  %s: %d rows", target, rowCount))
+	// Phase 2: feat
+	if err := runDir(ctx, app, "sql/feat", "v1", "v0", true); err != nil {
+		return err
 	}
 
 	ui.Success("Pipeline complete")
+	return nil
+}
+
+// doSQLDir runs all SQL files in the specified directory.
+func doSQLDir(ctx context.Context, app *App) error {
+	targetSchema := runTargetSchema
+	if targetSchema == "" {
+		targetSchema = deriveTargetSchema(runSQLDir)
+	}
+
+	if err := validateTargetAccess(targetSchema); err != nil {
+		ui.Danger(err.Error())
+		return err
+	}
+
+	export := isFeatDir(runSQLDir)
+	return runDir(ctx, app, runSQLDir, targetSchema, "v0", export)
+}
+
+// runDir discovers *.sql files in dir, sorts by name, rewrites SQL, and runs each.
+func runDir(ctx context.Context, app *App, dir string, targetSchema string, sourceSchema string, export bool) error {
+	pattern := filepath.Join(dir, "*.sql")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("glob %s: %w", pattern, err)
+	}
+	if len(files) == 0 {
+		ui.Warn(fmt.Sprintf("No SQL files found in %s", dir))
+		return nil
+	}
+	sort.Strings(files)
+
+	fileType := runFileType
+	if fileType == "" && app.Cfg.Run.DefaultFileType != "" {
+		fileType = app.Cfg.Run.DefaultFileType
+	}
+	if fileType == "" {
+		fileType = "parquet"
+	}
+
+	layer := deriveDuckDBLayer(dir)
+
+	for _, sqlFile := range files {
+		// Derive table name from filename
+		base := filepath.Base(sqlFile)
+		tableName := strings.TrimSuffix(base, ".sql")
+		tableName = stripNumericPrefix(tableName)
+		target := targetSchema + "." + tableName
+
+		ui.Info(fmt.Sprintf("Pipeline [%s]: %s -> %s (source: %s)", layer, sqlFile, target, sourceSchema))
+
+		// Read SQL file
+		sqlBytes, readErr := os.ReadFile(sqlFile)
+		if readErr != nil {
+			return fmt.Errorf("read %s: %w", sqlFile, readErr)
+		}
+
+		// Rewrite SQL: qualify CREATE TABLE with target schema
+		rewritten := rewriteSQL(string(sqlBytes), targetSchema)
+
+		// Write rewritten SQL to temp file for RunService
+		tmpFile, tmpErr := os.CreateTemp("", "pgwh-*.sql")
+		if tmpErr != nil {
+			return fmt.Errorf("create temp file: %w", tmpErr)
+		}
+		if _, writeErr := tmpFile.WriteString(rewritten); writeErr != nil {
+			tmpFile.Close()
+			os.Remove(tmpFile.Name())
+			return fmt.Errorf("write temp file: %w", writeErr)
+		}
+		tmpFile.Close()
+
+		// Build RunService with source schema
+		svc := buildRunService(app, target).WithSourceSchema(sourceSchema)
+
+		// Derive output path for export
+		outputPath := ""
+		if export && app.Cfg.Run.DefaultOutputDir != "" {
+			outputPath = filepath.Join(app.Cfg.Run.DefaultOutputDir, tableName+"."+fileType)
+		}
+
+		rowCount, runErr := svc.Run(ctx, tmpFile.Name(), target, outputPath, fileType)
+		os.Remove(tmpFile.Name())
+		if runErr != nil {
+			return fmt.Errorf("pipeline step %s failed: %w", sqlFile, runErr)
+		}
+		ui.Success(fmt.Sprintf("  %s: %d rows", target, rowCount))
+	}
+
 	return nil
 }
 
@@ -211,7 +355,7 @@ func doPromote(ctx context.Context, app *App) error {
 	return nil
 }
 
-// doSingleRun executes a single SQL file (legacy --sql-file mode).
+// doSingleRun executes a single SQL file.
 func doSingleRun(ctx context.Context, app *App) error {
 	fileType := runFileType
 	if fileType == "" {
@@ -243,11 +387,9 @@ func buildRunService(app *App, targetTable string) *services.RunService {
 	if app.Multi != nil {
 		switch {
 		case isFeatTarget(targetTable):
-			return services.NewRunServiceMulti(app.FeatureDB(), app.State, app.Logger,
-				app.Cfg.DuckDB.Silver, "silver")
+			return services.NewRunService(app.FeatureDB(), app.State, app.Logger)
 		default:
-			return services.NewRunServiceMulti(app.SilverDB(), app.State, app.Logger,
-				app.Cfg.DuckDB.Raw, "raw")
+			return services.NewRunService(app.SilverDB(), app.State, app.Logger)
 		}
 	}
 	return services.NewRunService(app.WH, app.State, app.Logger)
@@ -266,11 +408,13 @@ func humanizeBytes(b int64) string {
 
 func init() {
 	runCmd.Flags().StringVar(&runSQLFile, "sql-file", "", "path to SQL feature file")
-	runCmd.Flags().StringVar(&runTargetTable, "target-table", "", "target table (e.g., v1.order_enriched, feat.sales_summary)")
+	runCmd.Flags().StringVar(&runSQLDir, "sql-dir", "", "directory of SQL files to discover and run (sorted by numeric prefix)")
+	runCmd.Flags().StringVar(&runTargetTable, "target-table", "", "target table (e.g., v1.order_enriched)")
+	runCmd.Flags().StringVar(&runTargetSchema, "target-schema", "", "target schema for --sql-dir (default: derived from directory path)")
 	runCmd.Flags().StringVar(&runOutputPath, "output", "", "output file path")
 	runCmd.Flags().StringVar(&runFileType, "file-type", "", "output file type (parquet, csv)")
 	runCmd.Flags().BoolVar(&runRefresh, "refresh", false, "snapshot raw.duckdb into silver.duckdb v0")
-	runCmd.Flags().BoolVar(&runPipeline, "pipeline", false, "discover and run all SQL files in sql/silver/v1/ and sql/feat/")
+	runCmd.Flags().BoolVar(&runPipeline, "pipeline", false, "discover and run all SQL files in sql/silver/ and sql/feat/")
 	runCmd.Flags().BoolVar(&runPromote, "promote", false, "swap current.* views to the specified --version")
 	runCmd.Flags().IntVar(&runVersion, "version", 0, "silver version number (used with --promote)")
 	rootCmd.AddCommand(runCmd)

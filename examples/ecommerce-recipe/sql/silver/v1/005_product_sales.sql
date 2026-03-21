@@ -1,12 +1,12 @@
 -- ============================================================================
 -- Layer:       silver
--- Target:      silver.product_sales
+-- Target:      product_sales
 -- Description: Per-product sales aggregates combining order items with variant
 --              mappings. Includes all-time totals and trailing-30-day velocity.
--- Sources:     raw.order_items, raw.product_variants, raw.orders
+-- Sources:     order_items, product_variants, orders
 -- ============================================================================
 
-CREATE OR REPLACE TABLE silver.product_sales AS
+CREATE OR REPLACE TABLE product_sales AS
 SELECT
     pv.product_id,
 
@@ -20,7 +20,7 @@ SELECT
              THEN oi.qty ELSE 0
         END)                                    AS units_sold_30d
 
-FROM raw.order_items oi
-JOIN raw.product_variants pv ON oi.variant_id = pv.id
-JOIN raw.orders o ON oi.order_id = o.id
+FROM order_items oi
+JOIN product_variants pv ON oi.variant_id = pv.id
+JOIN orders o ON oi.order_id = o.id
 GROUP BY pv.product_id;

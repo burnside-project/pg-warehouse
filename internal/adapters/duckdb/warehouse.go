@@ -61,6 +61,13 @@ func (w *Warehouse) Bootstrap(ctx context.Context) error {
 	return w.ExecuteSQL(ctx, bootstrapSQL)
 }
 
+// SetSchema sets the default schema for unqualified table references.
+// This allows generic SQL (no schema prefixes) to resolve reads from the correct layer.
+func (w *Warehouse) SetSchema(ctx context.Context, schema string) error {
+	_, err := w.db.ExecContext(ctx, fmt.Sprintf("SET schema = '%s'", schema))
+	return err
+}
+
 // ExecuteSQL runs arbitrary SQL against the warehouse.
 func (w *Warehouse) ExecuteSQL(ctx context.Context, sqlStr string) error {
 	statements := splitStatements(sqlStr)

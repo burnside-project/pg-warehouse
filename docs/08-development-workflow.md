@@ -6,25 +6,37 @@ This guide covers how to build SQL pipelines using pg-warehouse's Medallion Arch
 
 ## Medallion Architecture
 
-pg-warehouse uses a single DuckDB file with four schemas:
+pg-warehouse uses three DuckDB files with versioned schemas:
 
 ```
 PostgreSQL (source)
-   ↓ CDC / sync
-DuckDB warehouse
-   ├── raw.*    — Bronze: mirrored source tables (sync/CDC writes here)
-   ├── stage.*  — Internal: merge buffer (auto-managed, not user-facing)
-   ├── silver.* — Silver: curated, joined, enriched transforms
-   └── feat.*   — Gold: analytics-ready aggregations + Parquet export
+   ↓ CDC (continuous)
+raw.duckdb           — LOCKED: CDC black box (stage.* + raw.*)
+   ↓ --refresh (snapshot)
+silver.duckdb
+   ├── v0.*          — LOCKED: raw data mirror (populated by --refresh)
+   ├── v1.*          — User transforms (reads from v0.*)
+   ├── current.*     — Production views (managed by --promote)
+   └── _meta.*       — Internal metadata
+   ↓ --refresh (pipeline copies silver current.* → feature v0.*)
+feature.duckdb
+   ├── v0.*          — LOCKED: silver data mirror
+   ├── v1.*          — User aggregations (reads from v0.*)
+   ├── current.*     — Production views
+   └── _meta.*       — Internal metadata
+   ↓
+out/*.parquet        — Exported analytics
 ```
 
-| Layer | Schema | Reads From | Written By | Purpose |
-|-------|--------|------------|------------|---------|
-| Bronze | `raw.*` | PostgreSQL | `sync`, `cdc start` | Exact mirror of source tables |
-| Silver | `silver.*` | `raw.*` only | `pg-warehouse run` | Cleaned, joined, enriched data |
-| Gold | `feat.*` | `silver.*` only | `pg-warehouse run` | Dashboard-ready aggregations |
+| File | Schema | Access | Written By | Purpose |
+|------|--------|--------|------------|---------|
+| `raw.duckdb` | `raw.*`, `stage.*` | **LOCKED** — DANGER if touched | CDC only | PostgreSQL mirror |
+| `silver.duckdb` | `v0.*` | **LOCKED** — refresh only | `--refresh` | Raw data snapshot |
+| `silver.duckdb` | `v1.*`, `v2.*` | **User writable** | `--sql-dir`, `--pipeline` | Silver transforms |
+| `feature.duckdb` | `v0.*` | **LOCKED** — pipeline only | Internal refresh | Silver data snapshot |
+| `feature.duckdb` | `v1.*` | **User writable** | `--sql-dir`, `--pipeline` | Feature aggregations |
 
-**Strict layering rule:** Silver reads from `raw.*` only. Feat reads from `silver.*` only. This prevents tangled dependencies and makes each layer independently testable.
+**Strict layering rule:** Silver v1 reads from v0 only. Feature v1 reads from v0 only. pg-warehouse enforces this transparently via `SET schema`.
 
 ---
 
@@ -33,11 +45,12 @@ DuckDB warehouse
 ```
 sql/
 ├── silver/
-│   ├── 001_order_enriched.sql
-│   ├── 002_customer_360.sql
-│   ├── 003_product_catalog.sql
-│   ├── 004_promotion_usage.sql
-│   └── 005_product_sales.sql
+│   └── v1/
+│       ├── 001_order_enriched.sql
+│       ├── 002_customer_360.sql
+│       ├── 003_product_catalog.sql
+│       ├── 004_promotion_usage.sql
+│       └── 005_product_sales.sql
 ├── feat/
 │   ├── 001_sales_summary.sql
 │   ├── 002_customer_analytics.sql
@@ -49,39 +62,40 @@ sql/
 **Rules:**
 - **Numeric prefix** (`001_`) = execution order. Files run in lexicographic sort order — no DAG needed.
 - **One file = one table.** Filename matches the target table name (minus prefix).
-- **Filepath determines target:** `sql/silver/001_order_enriched.sql` → `silver.order_enriched`
+- **Generic SQL** — no schema prefixes needed. pg-warehouse wires source (`v0`) and target (`v1`) schemas transparently.
+- `CREATE OR REPLACE TABLE order_enriched AS ...` — pg-warehouse rewrites this to `CREATE OR REPLACE TABLE v1.order_enriched AS ...`
 - Use `CREATE OR REPLACE TABLE` for idempotency — safe to re-run at any time.
 
 ---
 
 ## Writing a Silver Table
 
-Silver tables clean, join, and enrich raw data. They read **only** from `raw.*`.
+Silver tables clean, join, and enrich data from v0 (the raw data snapshot). SQL files are **generic** — no schema prefixes. pg-warehouse sets the source schema (`v0`) and rewrites `CREATE TABLE` to the target schema (`v1`) transparently.
 
 ### Template
 
 ```sql
 -- ============================================================================
 -- Layer:       silver
--- Target:      silver.<table_name>
+-- Target:      <table_name>
 -- Description: <what this table represents>
--- Sources:     raw.<table1>, raw.<table2>, ...
+-- Sources:     <table1>, <table2>, ...
 -- ============================================================================
 
-CREATE OR REPLACE TABLE silver.<table_name> AS
+CREATE OR REPLACE TABLE <table_name> AS
 SELECT
     -- columns
-FROM raw.<primary_table>
-LEFT JOIN raw.<secondary_table>
+FROM <primary_table>
+LEFT JOIN <secondary_table>
     ON ...
 ```
 
-### Walkthrough: `silver.order_enriched`
+### Walkthrough: `order_enriched`
 
 This table denormalizes orders by joining order items, payments, and shipments:
 
 ```sql
-CREATE OR REPLACE TABLE silver.order_enriched AS
+CREATE OR REPLACE TABLE order_enriched AS
 SELECT
     o.id AS order_id,
     o.customer_id,
@@ -91,12 +105,14 @@ SELECT
     p.payment_method,
     s.shipped_at,
     s.delivered_at
-FROM raw.orders o
-LEFT JOIN raw.order_items oi ON o.id = oi.order_id
-LEFT JOIN raw.payments p ON o.id = p.order_id
-LEFT JOIN raw.shipments s ON o.id = s.order_id
+FROM orders o
+LEFT JOIN order_items oi ON o.id = oi.order_id
+LEFT JOIN payments p ON o.id = p.order_id
+LEFT JOIN shipments s ON o.id = s.order_id
 GROUP BY o.id, o.customer_id, o.status, p.payment_method, s.shipped_at, s.delivered_at;
 ```
+
+At execution time, pg-warehouse rewrites this to `CREATE OR REPLACE TABLE v1.order_enriched AS ...` and sets `SET schema = 'v0'` so all unqualified table reads resolve from the raw data mirror.
 
 **Key patterns:**
 - Aggregate child tables (order items) into the parent grain (one row per order)
@@ -107,38 +123,38 @@ GROUP BY o.id, o.customer_id, o.status, p.payment_method, s.shipped_at, s.delive
 
 ## Writing a Feat Table
 
-Feat tables produce analytics-ready outputs. They read **only** from `silver.*`.
+Feat tables produce analytics-ready outputs. They read from v0 (the silver data snapshot). Same generic SQL convention — no schema prefixes.
 
 ### Template
 
 ```sql
 -- ============================================================================
 -- Layer:       feat
--- Target:      feat.<table_name>
+-- Target:      <table_name>
 -- Description: <what this table powers (dashboard, report, ML feature)>
--- Sources:     silver.<table1>, silver.<table2>, ...
+-- Sources:     <table1>, <table2>, ...
 -- ============================================================================
 
-CREATE OR REPLACE TABLE feat.<table_name> AS
+CREATE OR REPLACE TABLE <table_name> AS
 SELECT
     -- dimensions and metrics
-FROM silver.<table>
+FROM <table>
 GROUP BY ...
 ORDER BY ...;
 ```
 
-### Walkthrough: `feat.sales_summary`
+### Walkthrough: `sales_summary`
 
 Daily sales KPIs aggregated from enriched orders:
 
 ```sql
-CREATE OR REPLACE TABLE feat.sales_summary AS
+CREATE OR REPLACE TABLE sales_summary AS
 SELECT
     CAST(order_date AS DATE) AS sale_date,
     COUNT(DISTINCT order_id) AS order_count,
     SUM(net_amount) AS net_revenue,
     ROUND(AVG(net_amount), 2) AS avg_order_value
-FROM silver.order_enriched
+FROM order_enriched
 GROUP BY CAST(order_date AS DATE)
 ORDER BY sale_date;
 ```
@@ -151,75 +167,54 @@ ORDER BY sale_date;
 
 ---
 
-## The CDC Pause/Resume Pattern
+## Multi-DuckDB: No CDC Pause Needed
 
-DuckDB uses a single-writer lock. CDC holds a write connection while streaming, so SQL pipelines can't write concurrently. The solution: **stop CDC → run pipeline → restart CDC**.
-
-### Why this is necessary
+In multi-file mode, CDC writes to `raw.duckdb` continuously. Pipelines write to `silver.duckdb` and `feature.duckdb` — separate files, no lock conflict. The `--refresh` command snapshots `raw.duckdb` without stopping CDC.
 
 ```
-CDC running  →  DuckDB locked  →  pipeline `CREATE TABLE` fails
-CDC stopped  →  DuckDB free    →  pipeline runs successfully
-```
-
-CDC is a long-running process. Stopping it for a few minutes to run pipelines is safe — the PostgreSQL replication slot retains all WAL changes, so nothing is lost. CDC catches up the delta when it restarts.
-
-### How the orchestrator handles it
-
-The `scripts/run-pipeline.sh` script automates this:
-
-1. **Stop CDC** — sends `SIGINT` for graceful shutdown, waits up to 15s
-2. **Clear stale lock** — removes the lock row from SQLite state
-3. **Run silver SQL** — each file in order
-4. **Run feat SQL** — each file in order, with Parquet export
-5. **Restart CDC** — via `nohup` in background
-6. **Trap handler** — if any step fails, CDC still restarts
-
-```bash
-# The trap ensures CDC always restarts, even on failure
-trap cleanup EXIT
+CDC running  →  raw.duckdb locked  →  that's fine, pipeline uses silver.duckdb
+--refresh    →  snapshots raw.duckdb to /tmp (filesystem copy, no lock)
+--pipeline   →  writes to silver.duckdb and feature.duckdb (no conflict)
 ```
 
 ---
 
 ## Running the Pipeline
 
-### Make Targets
+### Full Pipeline (one command)
 
 ```bash
-make pipeline          # Full run: stop CDC → silver → feat → restart CDC
-make pipeline-silver   # Silver layer only
-make pipeline-feat     # Feat layer only
-make pipeline-preview  # Preview feat SQL output (10 rows each, no writes)
-make pipeline-status   # Show recent runs from SQLite state
+pg-warehouse run --refresh --pipeline --promote --version 1
 ```
 
-### Manual Steps
+This does: refresh raw → silver v0, run silver SQL, run feat SQL, promote v1 to current.
 
-All commands run from the pg-warehouse working directory (`~/pg-warehouse/`):
+### Run by Layer
 
 ```bash
-cd ~/pg-warehouse
+# Silver layer only
+pg-warehouse run --sql-dir ./sql/silver/v1/
 
-# 1. Stop CDC
-kill -SIGINT $(pgrep -f 'pg-warehouse cdc')
-sleep 5
-sqlite3 .pgwh/state.db 'DELETE FROM lock_state;'
+# Feature layer only (auto-exports to out/)
+pg-warehouse run --sql-dir ./sql/feat/
 
-# 2. Run a silver table
-./pg-warehouse run \
-    --sql-file ./sql/silver/001_order_enriched.sql \
-    --target-table silver.order_enriched
+# Override target schema (e.g., experimenting with v2)
+pg-warehouse run --sql-dir ./sql/silver/v1/ --target-schema v2
+```
 
-# 3. Run a feat table with export
-./pg-warehouse run \
-    --sql-file ./sql/feat/001_sales_summary.sql \
-    --target-table feat.sales_summary \
-    --output ./out/sales_summary.parquet \
-    --file-type parquet
+### Run a Single File
 
-# 4. Restart CDC
-nohup ./pg-warehouse cdc start --config pg-warehouse.yml > cdc.log 2>&1 &
+```bash
+pg-warehouse run --sql-file ./sql/silver/v1/001_order_enriched.sql
+```
+
+### Access Guards
+
+```bash
+# These will be REJECTED with DANGER messages:
+pg-warehouse run --sql-dir ./sql/silver/ --target-schema v0    # v0 is locked
+pg-warehouse run --sql-dir ./sql/silver/ --target-schema raw   # raw is locked
+pg-warehouse run --sql-dir ./sql/silver/ --target-schema _meta # _meta is reserved
 ```
 
 ---
@@ -247,21 +242,21 @@ This runs the SELECT portion of your SQL and displays results without creating t
 
 ### New Silver Table
 
-1. Create `sql/silver/NNN_<table_name>.sql` (next numeric prefix)
-2. Use `CREATE OR REPLACE TABLE silver.<table_name> AS SELECT ...`
-3. Read only from `raw.*` tables
+1. Create `sql/silver/v1/NNN_<table_name>.sql` (next numeric prefix)
+2. Use `CREATE OR REPLACE TABLE <table_name> AS SELECT ...` (no schema prefix)
+3. Reference source tables without schema prefixes (e.g., `FROM orders`, not `FROM v0.orders`)
 4. Add header comment block (layer, target, description, sources)
-5. Test: `pg-warehouse preview --sql-file ./sql/silver/NNN_<table_name>.sql --limit 10`
-6. Run: `pg-warehouse run --sql-file ./sql/silver/NNN_<table_name>.sql --target-table silver.<table_name>`
+5. Test: `pg-warehouse preview --sql-file ./sql/silver/v1/NNN_<table_name>.sql --limit 10`
+6. Run: `pg-warehouse run --sql-dir ./sql/silver/v1/`
 
 ### New Feat Table
 
 1. Create `sql/feat/NNN_<table_name>.sql` (next numeric prefix)
-2. Use `CREATE OR REPLACE TABLE feat.<table_name> AS SELECT ...`
-3. Read only from `silver.*` tables
+2. Use `CREATE OR REPLACE TABLE <table_name> AS SELECT ...` (no schema prefix)
+3. Reference source tables without schema prefixes (e.g., `FROM order_enriched`)
 4. Add header comment block
 5. Test: `pg-warehouse preview --sql-file ./sql/feat/NNN_<table_name>.sql --limit 10`
-6. Run: `pg-warehouse run --sql-file ./sql/feat/NNN_<table_name>.sql --target-table feat.<table_name> --output ./out/<table_name>.parquet`
+6. Run: `pg-warehouse run --sql-dir ./sql/feat/`
 7. Verify export: `ls -lh ./out/<table_name>.parquet`
 
 ### Verification
@@ -269,10 +264,6 @@ This runs the SELECT portion of your SQL and displays results without creating t
 ```bash
 # Check run history
 sqlite3 .pgwh/state.db 'SELECT * FROM feature_runs ORDER BY started_at DESC LIMIT 5;'
-
-# Inspect the new table
-pg-warehouse inspect schema silver.<table_name>
-pg-warehouse inspect schema feat.<table_name>
 
 # Verify Parquet output
 ls -lh ./out/

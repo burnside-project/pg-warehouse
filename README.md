@@ -24,19 +24,25 @@
 
 
 ```console
-$ pg-warehouse init --pg-url postgres://user:pass@localhost:5432/appdb
-Initialized warehouse at ./warehouse.duckdb
+$ pg-warehouse init --config pg-warehouse.yml
+Initialized warehouse
+  raw:     ./raw.duckdb
+  silver:  ./silver.duckdb
+  feature: ./feature.duckdb
+  state:   .pgwh/state.db
 
-$ pg-warehouse sync
-Syncing 4 tables...
-  orders         12,841 rows  (incremental, watermark: updated_at)
-  customers       3,209 rows  (full snapshot)
-  products          487 rows  (full snapshot)
-  order_items    31,002 rows  (CDC)
-Sync complete in 2.4s
+$ pg-warehouse cdc start
+Starting CDC streaming (slot=pgwh_slot, publication=pgwh_pub)
+[INFO] starting CDC stream from LSN 76/20155180
 
-$ pg-warehouse run --sql-file ./sql/customer_features.sql --output ./out/customer_features.parquet
-Wrote 3,209 rows to ./out/customer_features.parquet (428 KB)
+$ pg-warehouse run --refresh --pipeline --promote --version 1
+  OK    Refresh complete
+  INFO  Pipeline [silver]: sql/silver/v1/001_order_enriched.sql -> v1.order_enriched (source: v0)
+  OK      v1.order_enriched: 6,764,334 rows
+  INFO  Pipeline [feature]: sql/feat/001_sales_summary.sql -> v1.sales_summary (source: v0)
+  OK      v1.sales_summary: 1,247 rows
+  OK    Pipeline complete
+  OK    Promoted version 1 to production
 ```
 
 ## Documentation
@@ -132,16 +138,23 @@ https://github.com/burnside-project/pg-warehouse/blob/main/docs/09-multi-duckdb-
 
 ## Install
 
-```console
-$ brew install burnside-project/tap/pg-warehouse
-$ go install github.com/burnside-project/pg-warehouse/cmd/pg-warehouse@latest
-$ docker run --rm ghcr.io/burnside-project/pg-warehouse sync
+**Homebrew** (macOS / Linux):
+```bash
+brew install burnside-project/tap/pg-warehouse
 ```
 
-Or build from source:
-
+**Go install**:
 ```bash
-go build -o pg-warehouse ./cmd/pg-warehouse/
+go install github.com/burnside-project/pg-warehouse/cmd/pg-warehouse@latest
+```
+
+**Download binary** — see [Releases](https://github.com/burnside-project/pg-warehouse/releases) for Linux, macOS, and Windows (amd64/arm64).
+
+**Build from source**:
+```bash
+git clone https://github.com/burnside-project/pg-warehouse.git
+cd pg-warehouse
+make build
 ```
 
 ## Deployment Layout
@@ -174,17 +187,18 @@ ExecStart=/home/<user>/pg-warehouse/pg-warehouse cdc start --config pg-warehouse
 
 ## Quickstart (2 minutes)
 
-**1. Initialize** -- creates config, DuckDB warehouse, and state DB:
+**1. Initialize** -- creates config, DuckDB files, and state DB:
 
 ```console
 $ mkdir -p ~/pg-warehouse && cd ~/pg-warehouse
-$ pg-warehouse init --pg-url postgres://user:pass@localhost:5432/appdb --duckdb ./warehouse.duckdb
+$ pg-warehouse init --config pg-warehouse.yml
 ```
 
-**2. Sync** -- mirror PostgreSQL tables into DuckDB:
+**2. Start CDC** -- stream changes from PostgreSQL:
 
 ```console
-$ pg-warehouse sync
+$ pg-warehouse cdc setup --config pg-warehouse.yml
+$ nohup pg-warehouse cdc start --config pg-warehouse.yml > cdc.log 2>&1 &
 ```
 
 **3. Inspect** -- verify what landed:
@@ -196,15 +210,15 @@ $ pg-warehouse inspect tables
 **4. Run the pipeline** -- refresh raw data, build silver + feature transforms, export:
 
 ```console
-$ pg-warehouse run --refresh --pipeline --promote
+$ pg-warehouse run --refresh --pipeline --promote --version 1
 ```
 
-Or run individual transforms:
+Or run by layer:
 
 ```console
-$ pg-warehouse run --refresh
-$ pg-warehouse run --sql-file ./sql/silver/v1/001_order_enriched.sql
-$ pg-warehouse run --sql-file ./sql/feat/001_sales_summary.sql --output ./out/sales_summary.parquet
+$ pg-warehouse run --refresh                     # snapshot raw → silver v0
+$ pg-warehouse run --sql-dir ./sql/silver/v1/    # silver layer only
+$ pg-warehouse run --sql-dir ./sql/feat/         # feature layer + Parquet export
 ```
 
 **5. Validate setup**:

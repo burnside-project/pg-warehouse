@@ -14,6 +14,11 @@ import (
 	"github.com/burnside-project/pg-warehouse/internal/util"
 )
 
+// SchemaManager is the subset of Warehouse used for SET schema.
+type SchemaManager interface {
+	SetSchema(ctx context.Context, schema string) error
+}
+
 // RunService handles SQL feature job execution.
 type RunService struct {
 	warehouse ports.WarehouseStore
@@ -24,6 +29,9 @@ type RunService struct {
 	multiMode      bool
 	sourcePath     string // path to ATTACH as read-only source
 	sourceAlias    string // alias used in ATTACH
+
+	// Schema rewriting fields
+	sourceSchema string // source schema for SET schema (e.g., "v0")
 }
 
 // NewRunService creates a new RunService (single-file mode).
@@ -53,6 +61,15 @@ func NewRunServiceMulti(wh ports.WarehouseStore, meta ports.MetadataStore, logge
 		sourcePath:  sourcePath,
 		sourceAlias: sourceAlias,
 	}
+}
+
+// WithSourceSchema returns a copy of the RunService with the source schema set.
+// When set, SET schema = '<sourceSchema>' is executed before SQL to resolve
+// unqualified table references from the correct layer.
+func (s *RunService) WithSourceSchema(schema string) *RunService {
+	cp := *s
+	cp.sourceSchema = schema
+	return &cp
 }
 
 // Run executes a SQL feature file, validates the target, and optionally exports.
@@ -105,6 +122,17 @@ func (s *RunService) Run(ctx context.Context, sqlFile string, targetTable string
 				s.logger.Info("detaching %s", s.sourceAlias)
 				_ = attacher.DetachDatabase(ctx, s.sourceAlias)
 			}()
+		}
+	}
+
+	// Set source schema for unqualified table resolution
+	if s.sourceSchema != "" {
+		if sm, ok := s.warehouse.(SchemaManager); ok {
+			s.logger.Info("setting source schema: %s", s.sourceSchema)
+			if err := sm.SetSchema(ctx, s.sourceSchema); err != nil {
+				s.finalizeRun(ctx, run, 0, "failed", err.Error())
+				return 0, fmt.Errorf("failed to set source schema: %w", err)
+			}
 		}
 	}
 

@@ -1,6 +1,5 @@
 .PHONY: build run test lint fmt vet docker-build docker-up clean release-dry-run changelog \
-       pipeline pipeline-silver pipeline-feat pipeline-preview pipeline-status \
-       recipe-soak recipe-soak-preview recipe-soak-status
+       pipeline pipeline-silver pipeline-feat pipeline-preview pipeline-status
 
 BINARY := pg-warehouse
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -47,41 +46,26 @@ changelog:
 # ──────────────────────────────────────────────────────────────────────
 
 pipeline:
-	@echo "Running full pipeline (silver → feat)..."
-	./scripts/run-pipeline.sh
+	@echo "Running full pipeline (refresh → silver → feat)..."
+	./$(BINARY) run --refresh --pipeline
 
 pipeline-silver:
 	@echo "Running silver layer only..."
-	./scripts/run-pipeline.sh --silver-only
+	./$(BINARY) run --sql-dir ./sql/silver/v1/
 
 pipeline-feat:
 	@echo "Running feat layer only..."
-	./scripts/run-pipeline.sh --feat-only
+	./$(BINARY) run --sql-dir ./sql/feat/
 
 pipeline-preview:
 	@echo "Previewing feat tables (10 rows each)..."
-	./scripts/run-pipeline.sh --preview
+	@for f in sql/feat/*.sql; do \
+		echo "--- $$(basename $$f) ---"; \
+		./$(BINARY) preview --sql-file "$$f" --limit 10; \
+	done
 
 pipeline-status:
 	@echo "Recent pipeline runs:"
 	@sqlite3 -header -column .pgwh/state.db \
 		'SELECT * FROM feature_runs ORDER BY started_at DESC LIMIT 20;' 2>/dev/null \
 		|| echo "No state database found. Run 'pg-warehouse init' first."
-
-# ──────────────────────────────────────────────────────────────────────
-# Recipe: Soak-Server (10.29.29.211 / soak_test)
-# ──────────────────────────────────────────────────────────────────────
-
-recipe-soak:
-	@echo "Running soak-server recipe (silver → feat)..."
-	./recipes/soak-server/run-pipeline.sh
-
-recipe-soak-preview:
-	@echo "Previewing soak-server feat tables (10 rows each)..."
-	./recipes/soak-server/run-pipeline.sh --preview
-
-recipe-soak-status:
-	@echo "Recent soak-server pipeline runs:"
-	@sqlite3 -header -column recipes/soak-server/.pgwh/state.db \
-		'SELECT * FROM feature_runs ORDER BY started_at DESC LIMIT 20;' 2>/dev/null \
-		|| echo "No state database found. Run 'pg-warehouse init --config recipes/soak-server/pg-warehouse.yml' first."

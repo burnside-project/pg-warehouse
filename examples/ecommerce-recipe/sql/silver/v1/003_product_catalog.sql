@@ -1,13 +1,13 @@
 -- ============================================================================
 -- Layer:       silver
--- Target:      silver.product_catalog
+-- Target:      product_catalog
 -- Description: Complete product catalog combining products with variants,
 --              categories, inventory levels, price history, and review metrics.
--- Sources:     raw.products, raw.product_variants, raw.categories,
---              raw.inventory, raw.price_history, raw.reviews
+-- Sources:     products, product_variants, categories,
+--              inventory, price_history, reviews
 -- ============================================================================
 
-CREATE OR REPLACE TABLE silver.product_catalog AS
+CREATE OR REPLACE TABLE product_catalog AS
 SELECT
     p.id                                            AS product_id,
     p.name                                          AS product_name,
@@ -49,9 +49,9 @@ SELECT
         ELSE                                             'in_stock'
     END                                             AS stock_status
 
-FROM raw.products p
+FROM products p
 
-LEFT JOIN raw.categories cat
+LEFT JOIN categories cat
     ON p.category_id = cat.id
 
 -- Variant pricing
@@ -62,7 +62,7 @@ LEFT JOIN (
         MIN(COALESCE(price_override, 0))            AS min_price,
         MAX(COALESCE(price_override, 0))            AS max_price,
         ROUND(AVG(weight_grams), 0)                 AS avg_weight_grams
-    FROM raw.product_variants
+    FROM product_variants
     GROUP BY product_id
 ) v ON p.id = v.product_id
 
@@ -72,8 +72,8 @@ LEFT JOIN (
         pv.product_id,
         SUM(i.qty_available)                        AS total_available,
         SUM(i.qty_reserved)                         AS total_reserved
-    FROM raw.inventory i
-    JOIN raw.product_variants pv ON i.variant_id = pv.id
+    FROM inventory i
+    JOIN product_variants pv ON i.variant_id = pv.id
     GROUP BY pv.product_id
 ) inv ON p.id = inv.product_id
 
@@ -83,8 +83,8 @@ LEFT JOIN (
         pv.product_id,
         COUNT(*)                                    AS price_change_count,
         MAX(ph.changed_at)                          AS last_price_change_at
-    FROM raw.price_history ph
-    JOIN raw.product_variants pv ON ph.variant_id = pv.id
+    FROM price_history ph
+    JOIN product_variants pv ON ph.variant_id = pv.id
     GROUP BY pv.product_id
 ) ph ON p.id = ph.product_id
 
@@ -96,6 +96,6 @@ LEFT JOIN (
         ROUND(AVG(rating), 2)                       AS avg_rating,
         MIN(rating)                                 AS min_rating,
         MAX(rating)                                 AS max_rating
-    FROM raw.reviews
+    FROM reviews
     GROUP BY product_id
 ) r ON p.id = r.product_id;

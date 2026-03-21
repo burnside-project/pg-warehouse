@@ -139,11 +139,11 @@ The key architectural benefit: **state survives DuckDB rebuilds**.
 
 ```
 Scenario: DuckDB file corrupted
-  1. Delete warehouse.duckdb
+  1. Delete raw.duckdb / silver.duckdb / feature.duckdb
   2. pg-warehouse init
-  3. DuckDB rebuilt with empty raw/stage/feat schemas
-  4. .pgwh/state.db still has all sync watermarks
-  5. Next sync resumes from last watermark (no full re-sync needed)
+  3. DuckDB files rebuilt with empty schemas
+  4. .pgwh/state.db still has all sync watermarks and CDC state
+  5. CDC resumes from last confirmed LSN (no full re-sync needed)
 ```
 
 ## Concurrent Execution Safety

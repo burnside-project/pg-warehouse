@@ -1,13 +1,13 @@
 -- ============================================================================
 -- Layer:       feat
--- Target:      feat.inventory_health
+-- Target:      inventory_health
 -- Description: Inventory status by product and category — stock levels,
 --              sell-through rates, reorder signals. Powers the Operations
 --              dashboard.
--- Sources:     silver.product_catalog, silver.product_sales
+-- Sources:     product_catalog, product_sales
 -- ============================================================================
 
-CREATE OR REPLACE TABLE feat.inventory_health AS
+CREATE OR REPLACE TABLE inventory_health AS
 SELECT
     pc.product_id,
     pc.product_name,
@@ -45,8 +45,8 @@ SELECT
     pc.review_count,
     pc.avg_rating
 
-FROM silver.product_catalog pc
-LEFT JOIN silver.product_sales ps ON pc.product_id = ps.product_id
+FROM product_catalog pc
+LEFT JOIN product_sales ps ON pc.product_id = ps.product_id
 WHERE pc.product_status = 'active'
 ORDER BY
     CASE

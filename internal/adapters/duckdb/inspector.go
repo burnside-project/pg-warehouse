@@ -23,7 +23,8 @@ func NewInspector(db *sql.DB) *Inspector {
 func (i *Inspector) ListTables(ctx context.Context) ([]models.TableInfo, error) {
 	query := `SELECT table_schema, table_name
 		FROM information_schema.tables
-		WHERE table_schema IN ('raw', 'stage', 'feat')
+		WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+		  AND table_type = 'BASE TABLE'
 		ORDER BY table_schema, table_name`
 
 	rows, err := i.db.QueryContext(ctx, query)

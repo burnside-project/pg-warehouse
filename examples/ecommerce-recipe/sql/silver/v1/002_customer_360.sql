@@ -1,13 +1,13 @@
 -- ============================================================================
 -- Layer:       silver
--- Target:      silver.customer_360
+-- Target:      customer_360
 -- Description: Unified customer profile combining demographics with lifetime
 --              order metrics, default shipping address, and review activity.
--- Sources:     raw.customers, raw.orders, raw.order_items, raw.addresses,
---              raw.reviews
+-- Sources:     customers, orders, order_items, addresses,
+--              reviews
 -- ============================================================================
 
-CREATE OR REPLACE TABLE silver.customer_360 AS
+CREATE OR REPLACE TABLE customer_360 AS
 SELECT
     c.id                                            AS customer_id,
     c.email,
@@ -46,7 +46,7 @@ SELECT
     DATE_DIFF('day', om.first_order_date, om.last_order_date)
                                                     AS customer_lifetime_days
 
-FROM raw.customers c
+FROM customers c
 
 -- Default address (is_default=true, fallback to latest)
 LEFT JOIN (
@@ -56,7 +56,7 @@ LEFT JOIN (
         state,
         zip,
         country
-    FROM raw.addresses
+    FROM addresses
     WHERE addr_type = 'shipping'
     ORDER BY customer_id, is_default DESC, created_at DESC
 ) a ON c.id = a.customer_id
@@ -71,8 +71,8 @@ LEFT JOIN (
         ROUND(AVG(o.total), 2)                      AS avg_order_value,
         MIN(o.placed_at)                            AS first_order_date,
         MAX(o.placed_at)                            AS last_order_date
-    FROM raw.orders o
-    LEFT JOIN raw.order_items oi ON o.id = oi.order_id
+    FROM orders o
+    LEFT JOIN order_items oi ON o.id = oi.order_id
     GROUP BY o.customer_id
 ) om ON c.id = om.customer_id
 
@@ -82,6 +82,6 @@ LEFT JOIN (
         customer_id,
         COUNT(*)                                    AS review_count,
         ROUND(AVG(rating), 2)                       AS avg_rating_given
-    FROM raw.reviews
+    FROM reviews
     GROUP BY customer_id
 ) rv ON c.id = rv.customer_id;

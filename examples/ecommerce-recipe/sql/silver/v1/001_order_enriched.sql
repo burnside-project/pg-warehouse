@@ -1,14 +1,14 @@
 -- ============================================================================
 -- Layer:       silver
--- Target:      silver.order_enriched
+-- Target:      order_enriched
 -- Description: Denormalized orders combining order header, line items, payments,
 --              shipments, and coupon redemptions into a single analytics-ready
 --              table. One row per order.
--- Sources:     raw.orders, raw.order_items, raw.payments, raw.shipments,
---              raw.coupon_redemptions
+-- Sources:     orders, order_items, payments, shipments,
+--              coupon_redemptions
 -- ============================================================================
 
-CREATE OR REPLACE TABLE silver.order_enriched AS
+CREATE OR REPLACE TABLE order_enriched AS
 SELECT
     o.id                                            AS order_id,
     o.customer_id,
@@ -46,7 +46,7 @@ SELECT
     COALESCE(cr.coupon_discount, 0)                 AS coupon_discount,
     cr.coupon_count
 
-FROM raw.orders o
+FROM orders o
 
 -- Line items aggregate
 LEFT JOIN (
@@ -55,7 +55,7 @@ LEFT JOIN (
         COUNT(*)                                    AS line_item_count,
         SUM(qty)                                    AS total_qty,
         SUM(line_total)                             AS items_subtotal
-    FROM raw.order_items
+    FROM order_items
     GROUP BY order_id
 ) oi ON o.id = oi.order_id
 
@@ -68,7 +68,7 @@ LEFT JOIN (
         amount                                      AS payment_amount,
         gateway_txn_id,
         settled_at
-    FROM raw.payments
+    FROM payments
     ORDER BY order_id, created_at DESC
 ) p ON o.id = p.order_id
 
@@ -81,7 +81,7 @@ LEFT JOIN (
         status                                      AS shipment_status,
         shipped_at,
         delivered_at
-    FROM raw.shipments
+    FROM shipments
     ORDER BY order_id, id DESC
 ) s ON o.id = s.order_id
 
@@ -91,6 +91,6 @@ LEFT JOIN (
         order_id,
         SUM(discount_amount)                        AS coupon_discount,
         COUNT(*)                                    AS coupon_count
-    FROM raw.coupon_redemptions
+    FROM coupon_redemptions
     GROUP BY order_id
 ) cr ON o.id = cr.order_id;

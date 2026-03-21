@@ -120,9 +120,11 @@ The resulting directory layout:
 ~/pg-warehouse/
 ├── pg-warehouse           # Binary
 ├── pg-warehouse.yml       # Configuration (create below)
-├── warehouse.duckdb       # DuckDB warehouse (created by init)
+├── raw.duckdb             # CDC black box (created by init)
+├── silver.duckdb          # Silver development platform (created by init)
+├── feature.duckdb         # Feature analytics output (created by init)
 ├── .pgwh/state.db         # SQLite state (created by init)
-├── sql/silver/            # Silver layer SQL transforms
+├── sql/silver/v1/         # Silver layer SQL transforms
 ├── sql/feat/              # Feature layer SQL transforms
 ├── out/                   # Parquet/CSV exports
 └── cdc.log                # CDC log (when running via nohup)
@@ -143,7 +145,9 @@ postgres:
   schema: public
 
 duckdb:
-  path: ./warehouse.duckdb
+  raw: ./raw.duckdb
+  silver: ./silver.duckdb
+  feature: ./feature.duckdb
 
 cdc:
   enabled: true
@@ -208,7 +212,7 @@ psql postgres://warehouse:password@pg-host:5432/mydb -tA \
 pg-warehouse init --config pg-warehouse.yml
 ```
 
-Creates `warehouse.duckdb` (with `raw`, `stage`, `silver`, `feat` schemas) and `.pgwh/state.db` (SQLite state).
+Creates `raw.duckdb`, `silver.duckdb`, `feature.duckdb` and `.pgwh/state.db` (SQLite state).
 
 ### Step 2. Export Data from PostgreSQL and Load into DuckDB
 
@@ -234,7 +238,7 @@ SQL
 #### Load into DuckDB
 
 ```bash
-duckdb warehouse.duckdb <<'SQL'
+duckdb raw.duckdb <<'SQL'
 CREATE OR REPLACE TABLE raw.orders AS
   SELECT * FROM read_csv('/tmp/orders.csv', auto_detect=true);
 CREATE OR REPLACE TABLE raw.customers AS
@@ -355,7 +359,9 @@ postgres:
   schema: public
 
 duckdb:
-  path: ./warehouse.duckdb
+  raw: ./raw.duckdb
+  silver: ./silver.duckdb
+  feature: ./feature.duckdb
 
 sync:
   mode: incremental
@@ -373,10 +379,10 @@ sync:
 ### How to Initialize pg-warehouse ?
 
 ```bash
-pg-warehouse init --duckdb ./warehouse.duckdb
+pg-warehouse init --config pg-warehouse.yml
 ```
 
-Creates `warehouse.duckdb` (with `raw`, `stage`, `silver`, `feat` schemas) and `.pgwh/state.db` (SQLite state).
+Creates `raw.duckdb`, `silver.duckdb`, `feature.duckdb` and `.pgwh/state.db` (SQLite state).
 
 ### How to Validate pg-warehouse ?
 
@@ -517,13 +523,13 @@ Full `pg-warehouse.yml` with every parameter documented. See [Configuration Defa
 # Project
 # ──────────────────────────────────────────────────────────────────────
 project:
-  name: soak_test_warehouse           # Project identifier, stored in state DB
+  name: my_warehouse                  # Project identifier, stored in state DB
 
 # ──────────────────────────────────────────────────────────────────────
 # PostgreSQL Source
 # ──────────────────────────────────────────────────────────────────────
 postgres:
-  url: postgres://warehouse:pg_warehouse@10.29.29.211:5432/soak_test
+  url: postgres://warehouse:password@pg-host:5432/mydb
                                        # Connection string (user:pass@host:port/db)
   schema: public                       # Source schema to read from (default: public)
   max_conns: 2                         # Connection pool size, 1-5 (default: 2, capped at 5)
@@ -637,7 +643,7 @@ logging:
 For non-production databases or read replicas, DuckDB's `postgres_scan` extension is faster (~1 minute for 50M rows) but opens direct connections that can put significant load on the source:
 
 ```bash
-duckdb warehouse.duckdb <<'SQL'
+duckdb raw.duckdb <<'SQL'
 INSTALL postgres;
 LOAD postgres;
 CREATE OR REPLACE TABLE raw.orders AS

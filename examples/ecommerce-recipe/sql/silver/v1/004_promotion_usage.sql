@@ -1,12 +1,12 @@
 -- ============================================================================
 -- Layer:       silver
--- Target:      silver.promotion_usage
+-- Target:      promotion_usage
 -- Description: Promotion and coupon usage combining promotion definitions with
 --              redemption metrics and order impact.
--- Sources:     raw.promotions, raw.coupon_redemptions, raw.orders
+-- Sources:     promotions, coupon_redemptions, orders
 -- ============================================================================
 
-CREATE OR REPLACE TABLE silver.promotion_usage AS
+CREATE OR REPLACE TABLE promotion_usage AS
 SELECT
     pr.id                                           AS promotion_id,
     pr.code                                         AS promo_code,
@@ -37,7 +37,7 @@ SELECT
         ELSE                                                                 'active'
     END                                             AS promo_status
 
-FROM raw.promotions pr
+FROM promotions pr
 
 LEFT JOIN (
     SELECT
@@ -49,7 +49,7 @@ LEFT JOIN (
         MAX(cr.redeemed_at)                         AS last_redeemed_at,
         ROUND(AVG(o.total), 2)                      AS avg_order_total,
         COUNT(DISTINCT cr.customer_id)              AS unique_customers
-    FROM raw.coupon_redemptions cr
-    LEFT JOIN raw.orders o ON cr.order_id = o.id
+    FROM coupon_redemptions cr
+    LEFT JOIN orders o ON cr.order_id = o.id
     GROUP BY cr.promotion_id
 ) rd ON pr.id = rd.promotion_id;
