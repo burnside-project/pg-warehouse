@@ -94,9 +94,9 @@ func ApplyDefaults(cfg *models.ProjectConfig) {
 		}
 	}
 
-	// Multi-file DuckDB defaults: derive silver/feature paths from warehouse dir.
+	// Multi-file DuckDB defaults: derive silver/feature paths from raw dir.
 	if cfg.DuckDB.IsMultiFileMode() {
-		dir := filepath.Dir(cfg.DuckDB.Warehouse)
+		dir := filepath.Dir(cfg.DuckDB.Raw)
 		if cfg.DuckDB.Silver == "" {
 			cfg.DuckDB.Silver = filepath.Join(dir, "silver.duckdb")
 		}

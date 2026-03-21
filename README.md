@@ -111,7 +111,22 @@ pg-warehouse can runs completely isolated in another node
 https://github.com/burnside-project/pg-warehouse/blob/main/docs/01-architecture.md
 
 ## How does it work?
-pg-warehouse follows Medallion Architecture (RAW → SILVER → FEATURE). In single-file mode, all schemas live in one DuckDB file. In multi-file mode, three separate DuckDB files provide zero-downtime CDC with epoch-consistent reads, versioned silver development, and isolated feature exports.
+pg-warehouse uses three DuckDB files following Medallion Architecture:
+
+| File | Layer | Purpose |
+|------|-------|---------|
+| `raw.duckdb` | Bronze | CDC black box. Deduped PostgreSQL mirror. CDC owns it exclusively. |
+| `silver.duckdb` | Silver | Development platform. v0 = raw copy, v1 = your transforms, current = production. |
+| `feature.duckdb` | Gold | Analytics output. v0 = silver copy, v1 = aggregations, current = dashboards. |
+
+```bash
+# CDC streams continuously (never stops)
+pg-warehouse cdc start
+
+# Developer: refresh raw data, run transforms, promote
+pg-warehouse run --refresh --pipeline --promote
+```
+
 https://github.com/burnside-project/pg-warehouse/blob/main/docs/09-multi-duckdb-architecture.md
 
 
@@ -137,12 +152,14 @@ pg-warehouse runs from a single working directory. All paths in `pg-warehouse.ym
 ~/pg-warehouse/                  # Working directory
 ├── pg-warehouse                 # Binary
 ├── pg-warehouse.yml             # Configuration
-├── warehouse.duckdb             # DuckDB warehouse (created by init)
+├── raw.duckdb                   # CDC black box (deduped PostgreSQL mirror)
+├── silver.duckdb                # Silver development platform (v0 + v1 + current)
+├── feature.duckdb               # Feature analytics output (v0 + v1 + current)
 ├── .pgwh/
-│   └── state.db                 # SQLite state (sync/CDC progress)
+│   └── state.db                 # SQLite state (sync/CDC/epoch progress)
 ├── sql/
-│   ├── silver/                  # Silver layer SQL transforms
-│   └── feat/                    # Feature layer SQL transforms
+│   ├── silver/v1/               # Silver SQL transforms (001.sql, 002.sql...)
+│   └── feat/                    # Feature SQL transforms (001.sql, 002.sql...)
 ├── out/                         # Parquet/CSV exports
 └── cdc.log                      # CDC log (when running via nohup)
 ```
@@ -176,14 +193,18 @@ $ pg-warehouse sync
 $ pg-warehouse inspect tables
 ```
 
-**4. Run a SQL pipeline** -- transform data and export:
+**4. Run the pipeline** -- refresh raw data, build silver + feature transforms, export:
 
 ```console
-$ pg-warehouse run \
-    --sql-file ./sql/customer_features.sql \
-    --target-table feat.customer_features \
-    --output ./out/customer_features.parquet \
-    --file-type parquet
+$ pg-warehouse run --refresh --pipeline --promote
+```
+
+Or run individual transforms:
+
+```console
+$ pg-warehouse run --refresh
+$ pg-warehouse run --sql-file ./sql/silver/v1/001_order_enriched.sql
+$ pg-warehouse run --sql-file ./sql/feat/001_sales_summary.sql --output ./out/sales_summary.parquet
 ```
 
 **5. Validate setup**:

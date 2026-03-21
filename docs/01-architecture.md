@@ -18,42 +18,39 @@ Infrastructure (PostgreSQL, DuckDB, SQLite)
 
 ## Data Flow
 
-### Single-File Mode (Default)
-
 ```
 PostgreSQL (source)
-   ↓ snapshot / watermark / CDC
-DuckDB (local warehouse)
-   ├── raw.*   — mirrored source tables
-   ├── stage.* — temporary staging for incremental merge
-   ├── silver.* — curated, joined, enriched tables
-   └── feat.*  — SQL feature pipeline outputs
-   ↓
-Parquet / CSV exports
+   ↓ WAL streaming (CDC, never stops)
+
+raw.duckdb (CDC BLACK BOX)
+   ├── stage.*    CDC append buffer (_epoch, _deleted)
+   │     ↓ merge (dedup by PK, every 60s)
+   └── raw.*      deduped source tables (one row per PK, clean)
+         ↓
+         ↓ pg-warehouse run --refresh (snapshot + full copy)
+         ↓
+silver.duckdb (DEVELOPMENT PLATFORM)
+   ├── v0.*       copy of raw.* (read-only, frozen between refreshes)
+   │     ↓ pg-warehouse run --pipeline (001.sql, 002.sql... in order)
+   ├── v1.*       silver transforms (your SQL)
+   │     ↓ pg-warehouse run --promote (swap views)
+   ├── current.*  views → active version
+   └── _meta.*    versions, refresh log
+         ↓
+         ↓ pg-warehouse run --refresh (copy current.* to feature v0)
+         ↓
+feature.duckdb (ANALYTICS OUTPUT)
+   ├── v0.*       copy of silver current.* (read-only)
+   │     ↓ pg-warehouse run --pipeline (001.sql, 002.sql... in order)
+   ├── v1.*       feature transforms (your SQL)
+   │     ↓ pg-warehouse run --promote (swap views)
+   ├── current.*  views → active version
+   └── _meta.*    versions, refresh log
+         ↓
+   out/*.parquet → Dashboard → AI Q&A
 ```
 
-### Multi-File Mode (Zero-Downtime)
-
-```
-PostgreSQL (source)
-   ↓ WAL streaming (never stops)
-warehouse.duckdb (BLACK BOX — CDC owns exclusively)
-   ├── stage.* → dedup/merge buffer (internal)
-   ├── raw.*   → clean, deduped, epoch-stamped source tables
-   └── _epochs → epoch metadata
-   ↓ ATTACH READ_ONLY
-silver.duckdb (DEVELOPMENT PLATFORM — versioned)
-   ├── v1.*, v2.*, v3.* → versioned transform schemas
-   ├── current.*         → views pointing to active version
-   └── _meta.versions    → version registry
-   ↓ ATTACH READ_ONLY
-feature.duckdb
-   └── feat.* → analytics-ready aggregations
-   ↓
-Parquet / CSV exports → Dashboard → AI Q&A
-```
-
-See [Multi-DuckDB Architecture](09-multi-duckdb-architecture.md) for details.
+See [Multi-DuckDB Architecture](09-multi-duckdb-architecture.md) for the full design.
 
 ## State Flow
 
@@ -104,7 +101,7 @@ SQLite (.pgwh/state.db)
 2. **Adapters must not call each other directly.** All coordination goes through services.
 3. **Domain contains pure business logic.** No infrastructure imports.
 4. **State is decoupled from data.** SQLite state DB survives DuckDB rebuilds.
-5. **warehouse.duckdb is a black box.** CDC owns it exclusively. Users read raw.* only.
+5. **raw.duckdb is a black box.** CDC owns it exclusively. Users read raw.* only via `--refresh`.
 6. **Silver reads from raw only. Feat reads from silver only.** Strict layer isolation.
 7. **Epochs guarantee consistency.** Pipeline only reads merged (committed) epochs.
 
