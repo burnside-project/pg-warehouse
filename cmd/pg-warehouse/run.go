@@ -312,11 +312,11 @@ func runDir(ctx context.Context, app *App, dir string, targetSchema string, sour
 			return fmt.Errorf("create temp file: %w", tmpErr)
 		}
 		if _, writeErr := tmpFile.WriteString(rewritten); writeErr != nil {
-			tmpFile.Close()
-			os.Remove(tmpFile.Name())
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpFile.Name())
 			return fmt.Errorf("write temp file: %w", writeErr)
 		}
-		tmpFile.Close()
+		_ = tmpFile.Close()
 
 		// Build RunService with source schema
 		svc := buildRunService(app, target).WithSourceSchema(sourceSchema)
@@ -328,7 +328,7 @@ func runDir(ctx context.Context, app *App, dir string, targetSchema string, sour
 		}
 
 		rowCount, runErr := svc.Run(ctx, tmpFile.Name(), target, outputPath, fileType)
-		os.Remove(tmpFile.Name())
+		_ = os.Remove(tmpFile.Name())
 		if runErr != nil {
 			return fmt.Errorf("pipeline step %s failed: %w", sqlFile, runErr)
 		}
