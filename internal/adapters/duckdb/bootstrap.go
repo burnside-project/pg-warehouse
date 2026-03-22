@@ -14,6 +14,7 @@ CREATE SCHEMA IF NOT EXISTS feat;
 // silverBootstrapSQL initialises the silver development platform database.
 const silverBootstrapSQL = `
 CREATE SCHEMA IF NOT EXISTS v0;
+CREATE SCHEMA IF NOT EXISTS v1;
 CREATE SCHEMA IF NOT EXISTS current;
 CREATE SCHEMA IF NOT EXISTS _meta;
 CREATE TABLE IF NOT EXISTS _meta.versions (
@@ -24,6 +25,14 @@ CREATE TABLE IF NOT EXISTS _meta.versions (
     description TEXT,
     created_at  TIMESTAMP DEFAULT current_timestamp,
     promoted_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS _meta.version_files (
+    version      INTEGER,
+    filename     TEXT,
+    checksum     TEXT,
+    target_table TEXT,
+    built_at     TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (version, filename)
 );
 CREATE SEQUENCE IF NOT EXISTS _meta.refresh_log_seq;
 CREATE TABLE IF NOT EXISTS _meta.refresh_log (
@@ -40,6 +49,7 @@ CREATE TABLE IF NOT EXISTS _meta.refresh_log (
 // featureBootstrapSQL initialises the feature analytics output database.
 const featureBootstrapSQL = `
 CREATE SCHEMA IF NOT EXISTS v0;
+CREATE SCHEMA IF NOT EXISTS v1;
 CREATE SCHEMA IF NOT EXISTS current;
 CREATE SCHEMA IF NOT EXISTS _meta;
 CREATE TABLE IF NOT EXISTS _meta.versions (
@@ -50,6 +60,14 @@ CREATE TABLE IF NOT EXISTS _meta.versions (
     description TEXT,
     created_at  TIMESTAMP DEFAULT current_timestamp,
     promoted_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS _meta.version_files (
+    version      INTEGER,
+    filename     TEXT,
+    checksum     TEXT,
+    target_table TEXT,
+    built_at     TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (version, filename)
 );
 CREATE SEQUENCE IF NOT EXISTS _meta.refresh_log_seq;
 CREATE TABLE IF NOT EXISTS _meta.refresh_log (
@@ -71,4 +89,9 @@ func (w *Warehouse) BootstrapSilver(ctx context.Context) error {
 // BootstrapFeature creates schemas for the feature database.
 func (w *Warehouse) BootstrapFeature(ctx context.Context) error {
 	return w.ExecuteSQL(ctx, featureBootstrapSQL)
+}
+
+// EnsureSchema creates a schema if it does not exist.
+func (w *Warehouse) EnsureSchema(ctx context.Context, schema string) error {
+	return w.ExecuteSQL(ctx, "CREATE SCHEMA IF NOT EXISTS "+schema)
 }

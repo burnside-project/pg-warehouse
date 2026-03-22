@@ -14,12 +14,13 @@ import (
 // RefreshService populates v0.* in a target DuckDB by copying tables from an upstream DuckDB.
 type RefreshService struct {
 	target ports.WarehouseStore
+	state  ports.StateStore
 	logger *logging.Logger
 }
 
 // NewRefreshService creates a RefreshService.
-func NewRefreshService(target ports.WarehouseStore, logger *logging.Logger) *RefreshService {
-	return &RefreshService{target: target, logger: logger}
+func NewRefreshService(target ports.WarehouseStore, state ports.StateStore, logger *logging.Logger) *RefreshService {
+	return &RefreshService{target: target, state: state, logger: logger}
 }
 
 // Refresh snapshots the source DuckDB file and copies tables from sourceSchema into v0.
@@ -112,11 +113,20 @@ func (s *RefreshService) Refresh(ctx context.Context, sourcePath string, sourceS
 	// Step 5: Detach upstream before writing to _meta (avoids schema ambiguity)
 	_ = attacher.DetachDatabase(ctx, "upstream")
 
-	// Step 6: Record in _meta.refresh_log
+	// Step 6: Look up latest merged epoch from state DB
+	var epochID int64
+	if s.state != nil {
+		epoch, epochErr := s.state.GetLatestMergedEpoch(ctx)
+		if epochErr == nil && epoch != nil {
+			epochID = epoch.ID
+		}
+	}
+
+	// Step 7: Record in _meta.refresh_log
 	durationMs := time.Since(start).Milliseconds()
 	logSQL := fmt.Sprintf(
-		"INSERT INTO _meta.refresh_log (refreshed_at, source, tables, total_rows, duration_ms) VALUES (current_timestamp, '%s', %d, %d, %d)",
-		sourcePath, tableCount, totalRows, durationMs)
+		"INSERT INTO _meta.refresh_log (refreshed_at, source, epoch_id, tables, total_rows, duration_ms) VALUES (current_timestamp, '%s', %d, %d, %d, %d)",
+		sourcePath, epochID, tableCount, totalRows, durationMs)
 	if err := s.target.ExecuteSQL(ctx, logSQL); err != nil {
 		s.logger.Warn("failed to record refresh in _meta.refresh_log: %v", err)
 	}

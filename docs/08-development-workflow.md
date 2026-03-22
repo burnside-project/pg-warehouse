@@ -1,6 +1,6 @@
 # Development Workflow: SQL Pipelines (raw → silver → feat)
 
-This guide covers how to build SQL pipelines using pg-warehouse's Medallion Architecture. You'll learn the directory conventions, how to write silver and feat tables, the CDC pause/resume pattern, and how to run pipelines.
+This guide covers how to build SQL pipelines using pg-warehouse's Medallion Architecture. You'll learn the directory conventions, how to write silver and feat tables, how to plan changes before applying, and how to run pipelines.
 
 ---
 
@@ -45,12 +45,11 @@ out/*.parquet        — Exported analytics
 ```
 sql/
 ├── silver/
-│   └── v1/
-│       ├── 001_order_enriched.sql
-│       ├── 002_customer_360.sql
-│       ├── 003_product_catalog.sql
-│       ├── 004_promotion_usage.sql
-│       └── 005_product_sales.sql
+│   ├── 001_order_enriched.sql
+│   ├── 002_customer_360.sql
+│   ├── 003_product_catalog.sql
+│   ├── 004_promotion_usage.sql
+│   └── 005_product_sales.sql
 ├── feat/
 │   ├── 001_sales_summary.sql
 │   ├── 002_customer_analytics.sql
@@ -187,25 +186,25 @@ CDC running  →  raw.duckdb locked  →  that's fine, pipeline uses silver.duck
 pg-warehouse run --refresh --pipeline --promote --version 1
 ```
 
-This does: refresh raw → silver v0, run silver SQL, run feat SQL, promote v1 to current.
+This does: refresh raw → silver v0, run silver SQL, run feat SQL + Parquet export, promote v1 to current.
 
 ### Run by Layer
 
 ```bash
 # Silver layer only
-pg-warehouse run --sql-dir ./sql/silver/v1/
+pg-warehouse run --sql-dir ./sql/silver/
 
 # Feature layer only (auto-exports to out/)
 pg-warehouse run --sql-dir ./sql/feat/
 
 # Override target schema (e.g., experimenting with v2)
-pg-warehouse run --sql-dir ./sql/silver/v1/ --target-schema v2
+pg-warehouse run --sql-dir ./sql/silver/ --target-schema v2
 ```
 
 ### Run a Single File
 
 ```bash
-pg-warehouse run --sql-file ./sql/silver/v1/001_order_enriched.sql
+pg-warehouse run --sql-file ./sql/silver/001_order_enriched.sql
 ```
 
 ### Access Guards
@@ -215,6 +214,159 @@ pg-warehouse run --sql-file ./sql/silver/v1/001_order_enriched.sql
 pg-warehouse run --sql-dir ./sql/silver/ --target-schema v0    # v0 is locked
 pg-warehouse run --sql-dir ./sql/silver/ --target-schema raw   # raw is locked
 pg-warehouse run --sql-dir ./sql/silver/ --target-schema _meta # _meta is reserved
+```
+
+---
+
+## Plan: Preview Changes Before Applying
+
+Use `--plan` to see what will change **before** running SQL — similar to `terraform plan`.
+
+### How It Works
+
+`--plan` compares your SQL files against the currently active version's checksums. For each file, it reports:
+
+```
++ NEW        — SQL file exists but table wasn't in previous version
+~ CHANGED    — SQL file content differs from what built the current version
+= UNCHANGED  — SQL file is identical to what built the current version
+- REMOVED    — Table exists in current version but no SQL file for it
+```
+
+### Usage
+
+```bash
+# Plan silver changes (compare against current active version)
+pg-warehouse run --plan --sql-dir ./sql/silver/
+
+# Output:
+Plan: v1 (active) → v2
+
+  = order_enriched          UNCHANGED  (001_order_enriched.sql)
+  ~ customer_360            CHANGED    (002_customer_360.sql)
+  = product_catalog         UNCHANGED  (003_product_catalog.sql)
+  = promotion_usage         UNCHANGED  (004_promotion_usage.sql)
+  = product_sales           UNCHANGED  (005_product_sales.sql)
+
+Summary: 0 new, 1 changed, 4 unchanged, 0 removed
+```
+
+### Plan Before Experimenting
+
+```bash
+# 1. Edit a SQL file
+vi sql/silver/002_customer_360.sql    # change LTV formula
+
+# 2. Plan — see what changed
+pg-warehouse run --plan --sql-dir ./sql/silver/
+
+# 3. Apply to v2
+pg-warehouse run --sql-dir ./sql/silver/ --target-schema v2
+
+# 4. Compare v1 vs v2 data
+duckdb silver.duckdb "
+SELECT 'v1' AS ver, COUNT(*) AS rows, ROUND(AVG(lifetime_revenue),2) AS avg_rev FROM v1.customer_360
+UNION ALL
+SELECT 'v2', COUNT(*), ROUND(AVG(lifetime_revenue),2) FROM v2.customer_360;
+"
+
+# 5. Promote v2 when satisfied
+pg-warehouse run --promote --version 2
+```
+
+### Plan on Full Pipeline
+
+```bash
+# Plan what --pipeline will do
+pg-warehouse run --plan --pipeline
+
+# Output:
+Plan: silver (v1 active → v1)
+  = order_enriched          UNCHANGED
+  = customer_360            UNCHANGED
+  = product_catalog         UNCHANGED
+  = promotion_usage         UNCHANGED
+  = product_sales           UNCHANGED
+
+Plan: feat (v1 → v1)
+  = sales_summary           UNCHANGED
+  = customer_analytics      UNCHANGED
+  = product_performance     UNCHANGED
+  = promotion_effectiveness UNCHANGED
+  = inventory_health        UNCHANGED
+
+Summary: 0 new, 0 changed, 10 unchanged, 0 removed
+```
+
+If everything is `UNCHANGED`, there's nothing to rebuild — the pipeline can skip execution entirely.
+
+### How Checksums Are Tracked
+
+Every time `--pipeline` or `--sql-dir` runs, pg-warehouse records a SHA256 checksum of each SQL file in `_meta.version_files`:
+
+```sql
+SELECT * FROM _meta.version_files;
+```
+
+```
+version | filename                | checksum                         | target_table        | built_at
+--------+-------------------------+----------------------------------+---------------------+---------------------
+1       | 001_order_enriched.sql  | a3f2b1c4d5e6f7...               | v1.order_enriched   | 2026-03-22 18:14:10
+1       | 002_customer_360.sql    | 7d4e9f0a1b2c3d...               | v1.customer_360     | 2026-03-22 18:14:16
+```
+
+The plan compares new file checksums against these stored values to detect changes without executing SQL.
+
+---
+
+## Versioned Development
+
+### Create a New Version
+
+```bash
+# Auto-creates v2 schema + runs all silver SQL into v2
+pg-warehouse run --sql-dir ./sql/silver/ --target-schema v2
+```
+
+The schema is auto-created. No need to run `silver create-version` first.
+
+### Compare Versions
+
+```bash
+# In DuckDB CLI:
+duckdb silver.duckdb
+
+# Row counts
+SELECT 'v1' AS ver, COUNT(*) FROM v1.order_enriched
+UNION ALL
+SELECT 'v2', COUNT(*) FROM v2.order_enriched;
+
+# Aggregate drift
+SELECT 'v1' AS ver, ROUND(AVG(lifetime_revenue),2) AS avg_rev FROM v1.customer_360
+UNION ALL
+SELECT 'v2', ROUND(AVG(lifetime_revenue),2) FROM v2.customer_360;
+```
+
+### Promote
+
+```bash
+# Swap current.* views to v2
+pg-warehouse run --promote --version 2
+```
+
+This auto-registers v2 in `_meta.versions` and archives v1.
+
+### Version History
+
+```bash
+duckdb silver.duckdb "SELECT * FROM _meta.versions;"
+```
+
+```
+version | label | status   | promoted_at
+--------+-------+----------+---------------------
+1       | v1    | archived | 2026-03-22 18:14:42
+2       | v2    | active   | 2026-03-22 19:30:15
 ```
 
 ---
@@ -242,12 +394,13 @@ This runs the SELECT portion of your SQL and displays results without creating t
 
 ### New Silver Table
 
-1. Create `sql/silver/v1/NNN_<table_name>.sql` (next numeric prefix)
+1. Create `sql/silver/NNN_<table_name>.sql` (next numeric prefix)
 2. Use `CREATE OR REPLACE TABLE <table_name> AS SELECT ...` (no schema prefix)
 3. Reference source tables without schema prefixes (e.g., `FROM orders`, not `FROM v0.orders`)
 4. Add header comment block (layer, target, description, sources)
-5. Test: `pg-warehouse preview --sql-file ./sql/silver/v1/NNN_<table_name>.sql --limit 10`
-6. Run: `pg-warehouse run --sql-dir ./sql/silver/v1/`
+5. Plan: `pg-warehouse run --plan --sql-dir ./sql/silver/`
+6. Test: `pg-warehouse preview --sql-file ./sql/silver/NNN_<table_name>.sql --limit 10`
+7. Run: `pg-warehouse run --sql-dir ./sql/silver/`
 
 ### New Feat Table
 
@@ -255,9 +408,10 @@ This runs the SELECT portion of your SQL and displays results without creating t
 2. Use `CREATE OR REPLACE TABLE <table_name> AS SELECT ...` (no schema prefix)
 3. Reference source tables without schema prefixes (e.g., `FROM order_enriched`)
 4. Add header comment block
-5. Test: `pg-warehouse preview --sql-file ./sql/feat/NNN_<table_name>.sql --limit 10`
-6. Run: `pg-warehouse run --sql-dir ./sql/feat/`
-7. Verify export: `ls -lh ./out/<table_name>.parquet`
+5. Plan: `pg-warehouse run --plan --sql-dir ./sql/feat/`
+6. Test: `pg-warehouse preview --sql-file ./sql/feat/NNN_<table_name>.sql --limit 10`
+7. Run: `pg-warehouse run --sql-dir ./sql/feat/`
+8. Verify export: `ls -lh ./out/<table_name>.parquet`
 
 ### Verification
 
@@ -265,6 +419,25 @@ This runs the SELECT portion of your SQL and displays results without creating t
 # Check run history
 sqlite3 .pgwh/state.db 'SELECT * FROM feature_runs ORDER BY started_at DESC LIMIT 5;'
 
+# Check what was built
+duckdb silver.duckdb "SELECT * FROM _meta.version_files WHERE version = 1;"
+
 # Verify Parquet output
 ls -lh ./out/
 ```
+
+---
+
+## Command Reference
+
+| Command | What it does |
+|---------|-------------|
+| `run --refresh` | Snapshot raw.duckdb → silver.duckdb v0 |
+| `run --pipeline` | Run all sql/silver/*.sql + sql/feat/*.sql into v1 |
+| `run --sql-dir DIR` | Run all SQL in DIR (sorted by numeric prefix) |
+| `run --sql-dir DIR --target-schema v2` | Run SQL into v2 (auto-creates schema) |
+| `run --sql-file FILE` | Run a single SQL file |
+| `run --plan --sql-dir DIR` | Show plan: what would change vs current version |
+| `run --plan --pipeline` | Show plan for full pipeline |
+| `run --promote --version N` | Swap current.* views to vN |
+| `run --refresh --pipeline --promote --version 1` | Production: do everything |

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -123,6 +124,7 @@ var (
 	runRefresh       bool
 	runPipeline      bool
 	runPromote       bool
+	runPlan          bool
 	runVersion       int
 )
 
@@ -137,6 +139,7 @@ Modes:
   --sql-dir DIR    Run all SQL files in a directory (sorted by numeric prefix)
   --sql-file FILE  Run a single SQL file
   --promote        Swap current.* views to point at the specified --version
+  --plan           Show plan of changes without applying (terraform-style diff)
 
 Schema wiring (for --sql-dir and --pipeline):
   SQL files are generic — no schema prefixes needed. pg-warehouse sets the
@@ -153,7 +156,7 @@ Examples:
   pg-warehouse run --sql-dir ./sql/feat/ --target-schema v2
   pg-warehouse run --sql-file ./sql/silver/001_order_enriched.sql`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !runRefresh && !runPipeline && !runPromote && runSQLFile == "" && runSQLDir == "" {
+		if !runRefresh && !runPipeline && !runPromote && !runPlan && runSQLFile == "" && runSQLDir == "" {
 			return cmd.Help()
 		}
 
@@ -178,6 +181,43 @@ Examples:
 			if err := doRefresh(ctx, app); err != nil {
 				return err
 			}
+		}
+
+		// --plan: show what would change without applying
+		if runPlan {
+			if runPipeline {
+				silverDir := "sql/silver/v1"
+				if _, statErr := os.Stat(silverDir); os.IsNotExist(statErr) {
+					silverDir = "sql/silver"
+				}
+				if planErr := doPlan(ctx, app, silverDir, "v1"); planErr != nil {
+					return planErr
+				}
+				if planErr := doPlan(ctx, app, "sql/feat", "v1"); planErr != nil {
+					return planErr
+				}
+			} else if runSQLDir != "" {
+				targetSchema := runTargetSchema
+				if targetSchema == "" {
+					targetSchema = deriveTargetSchema(runSQLDir)
+				}
+				if planErr := doPlan(ctx, app, runSQLDir, targetSchema); planErr != nil {
+					return planErr
+				}
+			} else {
+				// Default: plan for the standard pipeline directories
+				silverDir := "sql/silver/v1"
+				if _, statErr := os.Stat(silverDir); os.IsNotExist(statErr) {
+					silverDir = "sql/silver"
+				}
+				if planErr := doPlan(ctx, app, silverDir, "v1"); planErr != nil {
+					return planErr
+				}
+				if planErr := doPlan(ctx, app, "sql/feat", "v1"); planErr != nil {
+					return planErr
+				}
+			}
+			return nil
 		}
 
 		// --pipeline: discover and run all SQL files
@@ -220,7 +260,7 @@ func doRefresh(ctx context.Context, app *App) error {
 		return fmt.Errorf("--refresh requires multi-file mode (duckdb.raw must be set)")
 	}
 
-	svc := services.NewRefreshService(silverDB, app.Logger)
+	svc := services.NewRefreshService(silverDB, app.State, app.Logger)
 	ui.Info("Refreshing: snapshotting raw.duckdb into silver.duckdb v0...")
 	if err := svc.Refresh(ctx, rawPath, "raw"); err != nil {
 		return fmt.Errorf("refresh failed: %w", err)
@@ -278,6 +318,15 @@ func runDir(ctx context.Context, app *App, dir string, targetSchema string, sour
 	}
 	sort.Strings(files)
 
+	// Auto-create target schema if it doesn't exist
+	targetDB := app.SilverDB()
+	if isFeatDir(dir) {
+		targetDB = app.FeatureDB()
+	}
+	if err := targetDB.EnsureSchema(ctx, targetSchema); err != nil {
+		return fmt.Errorf("create schema %s: %w", targetSchema, err)
+	}
+
 	fileType := runFileType
 	if fileType == "" && app.Cfg.Run.DefaultFileType != "" {
 		fileType = app.Cfg.Run.DefaultFileType
@@ -333,7 +382,120 @@ func runDir(ctx context.Context, app *App, dir string, targetSchema string, sour
 			return fmt.Errorf("pipeline step %s failed: %w", sqlFile, runErr)
 		}
 		ui.Success(fmt.Sprintf("  %s: %d rows", target, rowCount))
+
+		// Record file checksum in _meta.version_files
+		versionNum := strings.TrimPrefix(targetSchema, "v")
+		checksum := fmt.Sprintf("%x", sha256.Sum256(sqlBytes))
+		recordSQL := fmt.Sprintf(
+			"DELETE FROM _meta.version_files WHERE version = %s AND filename = '%s'; INSERT INTO _meta.version_files (version, filename, checksum, target_table) VALUES (%s, '%s', '%s', '%s')",
+			versionNum, filepath.Base(sqlFile), versionNum, filepath.Base(sqlFile), checksum, target)
+		if recordErr := targetDB.ExecuteSQL(ctx, recordSQL); recordErr != nil {
+			app.Logger.Warn("failed to record checksum for %s: %v", filepath.Base(sqlFile), recordErr)
+		}
 	}
+
+	return nil
+}
+
+// doPlan shows a terraform-style plan of what would change when running SQL files.
+func doPlan(ctx context.Context, app *App, dir string, targetSchema string) error {
+	// 1. Discover SQL files
+	pattern := filepath.Join(dir, "*.sql")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("glob %s: %w", pattern, err)
+	}
+	if len(files) == 0 {
+		ui.Warn(fmt.Sprintf("No SQL files found in %s", dir))
+		return nil
+	}
+	sort.Strings(files)
+
+	// 2. Compute checksums for new files
+	newFiles := map[string]string{} // filename -> checksum
+	for _, f := range files {
+		content, readErr := os.ReadFile(f)
+		if readErr != nil {
+			return fmt.Errorf("read %s: %w", f, readErr)
+		}
+		checksum := fmt.Sprintf("%x", sha256.Sum256(content))
+		newFiles[filepath.Base(f)] = checksum
+	}
+
+	// 3. Get baseline checksums from _meta.version_files
+	targetDB := app.SilverDB()
+	if isFeatDir(dir) {
+		targetDB = app.FeatureDB()
+	}
+
+	// Find the active version as baseline
+	baselineVersion := 0
+	baselineVersionLabel := "(none)"
+	activeRows, queryErr := targetDB.QueryRows(ctx,
+		"SELECT version FROM _meta.versions WHERE status = 'active' LIMIT 1", 1)
+	if queryErr == nil && len(activeRows) > 0 {
+		if v, ok := activeRows[0]["version"]; ok {
+			switch val := v.(type) {
+			case int64:
+				baselineVersion = int(val)
+			case int32:
+				baselineVersion = int(val)
+			case float64:
+				baselineVersion = int(val)
+			}
+		}
+		if baselineVersion > 0 {
+			baselineVersionLabel = fmt.Sprintf("v%d", baselineVersion)
+		}
+	}
+
+	baselineFiles := map[string]string{} // filename -> checksum
+	if baselineVersion > 0 {
+		rows, rowErr := targetDB.QueryRows(ctx,
+			fmt.Sprintf("SELECT filename, checksum FROM _meta.version_files WHERE version = %d", baselineVersion), 100)
+		if rowErr == nil {
+			for _, row := range rows {
+				baselineFiles[fmt.Sprintf("%v", row["filename"])] = fmt.Sprintf("%v", row["checksum"])
+			}
+		}
+	}
+
+	// 4. Compare and print plan
+	fmt.Println()
+	ui.Info(fmt.Sprintf("Plan: %s -> %s  (%s)", baselineVersionLabel, targetSchema, dir))
+	fmt.Println()
+
+	var added, changed, unchanged, removed int
+
+	for _, f := range files {
+		name := filepath.Base(f)
+		newChecksum := newFiles[name]
+		tableName := stripNumericPrefix(strings.TrimSuffix(name, ".sql"))
+
+		if baselineChecksum, exists := baselineFiles[name]; exists {
+			if baselineChecksum == newChecksum {
+				fmt.Printf("  = %s.%-30s UNCHANGED\n", targetSchema, tableName)
+				unchanged++
+			} else {
+				ui.Warn(fmt.Sprintf("~ %s.%-30s CHANGED", targetSchema, tableName))
+				changed++
+			}
+			delete(baselineFiles, name) // mark as seen
+		} else {
+			ui.Success(fmt.Sprintf("+ %s.%-30s NEW", targetSchema, tableName))
+			added++
+		}
+	}
+
+	// Remaining baseline files = removed
+	for name := range baselineFiles {
+		tableName := stripNumericPrefix(strings.TrimSuffix(name, ".sql"))
+		ui.Warn(fmt.Sprintf("- %s.%-30s REMOVED", targetSchema, tableName))
+		removed++
+	}
+
+	fmt.Println()
+	ui.Info(fmt.Sprintf("Summary: %d new, %d changed, %d unchanged, %d removed", added, changed, unchanged, removed))
 
 	return nil
 }
@@ -416,6 +578,7 @@ func init() {
 	runCmd.Flags().BoolVar(&runRefresh, "refresh", false, "snapshot raw.duckdb into silver.duckdb v0")
 	runCmd.Flags().BoolVar(&runPipeline, "pipeline", false, "discover and run all SQL files in sql/silver/ and sql/feat/")
 	runCmd.Flags().BoolVar(&runPromote, "promote", false, "swap current.* views to the specified --version")
+	runCmd.Flags().BoolVar(&runPlan, "plan", false, "show plan of changes without applying")
 	runCmd.Flags().IntVar(&runVersion, "version", 0, "silver version number (used with --promote)")
 	rootCmd.AddCommand(runCmd)
 }
