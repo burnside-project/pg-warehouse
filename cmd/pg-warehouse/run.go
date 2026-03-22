@@ -499,9 +499,18 @@ func doPlan(ctx context.Context, app *App, dir string, targetSchema string) erro
 			content, readErr := os.ReadFile(f)
 			if readErr == nil {
 				rewritten := rewriteSQL(string(content), targetSchema)
-				if valErr := targetDB.ValidateSQL(ctx, rewritten); valErr != nil {
-					ui.Danger(fmt.Sprintf("    WARNING: SQL validation failed for %s (%s): %v", name, status, valErr))
-					warnings++
+				valErr := targetDB.ValidateSQL(ctx, rewritten)
+				if valErr != nil {
+					errStr := valErr.Error()
+					// Skip "table does not exist" errors for cross-layer dependencies
+					// (e.g., feat SQL referencing v1.* silver tables that haven't been built yet)
+					if strings.Contains(errStr, "does not exist") &&
+						(strings.Contains(errStr, targetSchema+".") || strings.Contains(errStr, "v1.")) {
+						fmt.Printf("    (skipped validation — depends on %s layer)\n", targetSchema)
+					} else {
+						ui.Danger(fmt.Sprintf("    WARNING: SQL validation failed for %s (%s): %v", name, status, valErr))
+						warnings++
+					}
 				} else {
 					validated++
 				}
