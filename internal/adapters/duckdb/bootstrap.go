@@ -25,8 +25,9 @@ CREATE TABLE IF NOT EXISTS _meta.versions (
     created_at  TIMESTAMP DEFAULT current_timestamp,
     promoted_at TIMESTAMP
 );
+CREATE SEQUENCE IF NOT EXISTS _meta.refresh_log_seq;
 CREATE TABLE IF NOT EXISTS _meta.refresh_log (
-    id           INTEGER PRIMARY KEY,
+    id           INTEGER PRIMARY KEY DEFAULT nextval('_meta.refresh_log_seq'),
     refreshed_at TIMESTAMP DEFAULT current_timestamp,
     source       TEXT,
     epoch_id     INTEGER,
@@ -50,8 +51,9 @@ CREATE TABLE IF NOT EXISTS _meta.versions (
     created_at  TIMESTAMP DEFAULT current_timestamp,
     promoted_at TIMESTAMP
 );
+CREATE SEQUENCE IF NOT EXISTS _meta.refresh_log_seq;
 CREATE TABLE IF NOT EXISTS _meta.refresh_log (
-    id           INTEGER PRIMARY KEY,
+    id           INTEGER PRIMARY KEY DEFAULT nextval('_meta.refresh_log_seq'),
     refreshed_at TIMESTAMP DEFAULT current_timestamp,
     source       TEXT,
     epoch_id     INTEGER,

@@ -41,7 +41,6 @@ func (s *RefreshService) Refresh(ctx context.Context, sourcePath string, sourceS
 	}
 	defer func() {
 		_ = os.Remove(snapshotPath)
-		// Also remove WAL file if it was copied
 		_ = os.Remove(snapshotPath + ".wal")
 	}()
 
@@ -59,7 +58,6 @@ func (s *RefreshService) Refresh(ctx context.Context, sourcePath string, sourceS
 	if err := attacher.AttachReadOnly(ctx, snapshotPath, "upstream"); err != nil {
 		return fmt.Errorf("failed to attach snapshot: %w", err)
 	}
-	defer func() { _ = attacher.DetachDatabase(ctx, "upstream") }()
 
 	// Step 3: List tables in source schema
 	query := fmt.Sprintf(
@@ -67,48 +65,61 @@ func (s *RefreshService) Refresh(ctx context.Context, sourcePath string, sourceS
 		sourceSchema)
 	rows, err := s.target.QueryRows(ctx, query, 100)
 	if err != nil {
-		// Fallback: try duckdb_tables() for attached databases
 		query = fmt.Sprintf(
 			"SELECT table_name FROM duckdb_tables() WHERE database_name = 'upstream' AND schema_name = '%s' ORDER BY table_name",
 			sourceSchema)
 		rows, err = s.target.QueryRows(ctx, query, 100)
 		if err != nil {
+			_ = attacher.DetachDatabase(ctx, "upstream")
 			return fmt.Errorf("failed to list source tables: %w", err)
 		}
 	}
 
 	if len(rows) == 0 {
+		_ = attacher.DetachDatabase(ctx, "upstream")
 		return fmt.Errorf("no tables found in upstream.%s", sourceSchema)
 	}
 
-	// Step 4: Copy each table into v0.*
+	// Step 4: Copy each table into v0.* and count rows from upstream
 	var totalRows int64
 	tableCount := 0
 	for _, row := range rows {
 		tableName := fmt.Sprintf("%v", row["table_name"])
-		sql := fmt.Sprintf(
+		copySQL := fmt.Sprintf(
 			"CREATE OR REPLACE TABLE v0.\"%s\" AS SELECT * FROM upstream.%s.\"%s\"",
 			tableName, sourceSchema, tableName)
 		s.logger.Info("refreshing v0.%s from %s.%s", tableName, sourceSchema, tableName)
-		if err := s.target.ExecuteSQL(ctx, sql); err != nil {
+		if err := s.target.ExecuteSQL(ctx, copySQL); err != nil {
+			_ = attacher.DetachDatabase(ctx, "upstream")
 			return fmt.Errorf("failed to copy %s.%s to v0: %w", sourceSchema, tableName, err)
 		}
 
-		// Count rows
-		count, err := s.target.CountRows(ctx, fmt.Sprintf("v0.\"%s\"", tableName))
-		if err == nil {
-			totalRows += count
-			s.logger.Info("  v0.%s: %d rows", tableName, count)
+		// Count rows from upstream source (avoids schema ambiguity on target db)
+		countQuery := fmt.Sprintf("SELECT COUNT(*) AS cnt FROM upstream.%s.\"%s\"", sourceSchema, tableName)
+		countRows, countErr := s.target.QueryRows(ctx, countQuery, 1)
+		if countErr == nil && len(countRows) > 0 {
+			if cnt, ok := countRows[0]["cnt"]; ok {
+				switch val := cnt.(type) {
+				case int64:
+					totalRows += val
+					s.logger.Info("  v0.%s: %d rows", tableName, val)
+				}
+			}
 		}
 		tableCount++
 	}
 
-	// Step 5: Record in _meta.refresh_log
+	// Step 5: Detach upstream before writing to _meta (avoids schema ambiguity)
+	_ = attacher.DetachDatabase(ctx, "upstream")
+
+	// Step 6: Record in _meta.refresh_log
 	durationMs := time.Since(start).Milliseconds()
 	logSQL := fmt.Sprintf(
 		"INSERT INTO _meta.refresh_log (refreshed_at, source, tables, total_rows, duration_ms) VALUES (current_timestamp, '%s', %d, %d, %d)",
 		sourcePath, tableCount, totalRows, durationMs)
-	_ = s.target.ExecuteSQL(ctx, logSQL)
+	if err := s.target.ExecuteSQL(ctx, logSQL); err != nil {
+		s.logger.Warn("failed to record refresh in _meta.refresh_log: %v", err)
+	}
 
 	s.logger.Info("refresh complete: %d tables, %d total rows, %dms", tableCount, totalRows, durationMs)
 	return nil
