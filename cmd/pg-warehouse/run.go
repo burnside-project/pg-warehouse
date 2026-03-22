@@ -465,25 +465,47 @@ func doPlan(ctx context.Context, app *App, dir string, targetSchema string) erro
 	ui.Info(fmt.Sprintf("Plan: %s -> %s  (%s)", baselineVersionLabel, targetSchema, dir))
 	fmt.Println()
 
-	var added, changed, unchanged, removed int
+	var added, changed, unchanged, removed, validated, warnings int
 
 	for _, f := range files {
 		name := filepath.Base(f)
 		newChecksum := newFiles[name]
 		tableName := stripNumericPrefix(strings.TrimSuffix(name, ".sql"))
 
+		status := ""
+		needsValidation := false
+
 		if baselineChecksum, exists := baselineFiles[name]; exists {
 			if baselineChecksum == newChecksum {
 				fmt.Printf("  = %s.%-30s UNCHANGED\n", targetSchema, tableName)
 				unchanged++
+				status = "unchanged"
 			} else {
 				ui.Warn(fmt.Sprintf("~ %s.%-30s CHANGED", targetSchema, tableName))
 				changed++
+				status = "changed"
+				needsValidation = true
 			}
 			delete(baselineFiles, name) // mark as seen
 		} else {
 			ui.Success(fmt.Sprintf("+ %s.%-30s NEW", targetSchema, tableName))
 			added++
+			status = "new"
+			needsValidation = true
+		}
+
+		// Validate SQL syntax for NEW and CHANGED files via EXPLAIN
+		if needsValidation {
+			content, readErr := os.ReadFile(f)
+			if readErr == nil {
+				rewritten := rewriteSQL(string(content), targetSchema)
+				if valErr := targetDB.ValidateSQL(ctx, rewritten); valErr != nil {
+					ui.Danger(fmt.Sprintf("    WARNING: SQL validation failed for %s (%s): %v", name, status, valErr))
+					warnings++
+				} else {
+					validated++
+				}
+			}
 		}
 	}
 
@@ -495,7 +517,11 @@ func doPlan(ctx context.Context, app *App, dir string, targetSchema string) erro
 	}
 
 	fmt.Println()
-	ui.Info(fmt.Sprintf("Summary: %d new, %d changed, %d unchanged, %d removed", added, changed, unchanged, removed))
+	summary := fmt.Sprintf("Summary: %d new, %d changed, %d unchanged, %d removed", added, changed, unchanged, removed)
+	if validated > 0 || warnings > 0 {
+		summary += fmt.Sprintf("  |  validated: %d ok, %d warnings", validated, warnings)
+	}
+	ui.Info(summary)
 
 	return nil
 }
