@@ -60,25 +60,35 @@ func (s *RefreshService) Refresh(ctx context.Context, sourcePath string, sourceS
 		return fmt.Errorf("failed to attach snapshot: %w", err)
 	}
 
-	// Step 3: List tables in source schema
+	// Step 3: List tables and views in source schema
+	// Try multiple approaches — DuckDB has quirks with information_schema on attached databases
+	var rows []map[string]any
+
+	// Attempt 1: information_schema (tables + views)
 	query := fmt.Sprintf(
-		"SELECT table_name FROM upstream.information_schema.tables WHERE table_schema = '%s' AND table_type = 'BASE TABLE' ORDER BY table_name",
+		"SELECT table_name FROM upstream.information_schema.tables WHERE table_schema = '%s' ORDER BY table_name",
 		sourceSchema)
-	rows, err := s.target.QueryRows(ctx, query, 100)
-	if err != nil {
+	rows, err = s.target.QueryRows(ctx, query, 100)
+
+	// Attempt 2: duckdb_tables() for attached databases
+	if err != nil || len(rows) == 0 {
 		query = fmt.Sprintf(
 			"SELECT table_name FROM duckdb_tables() WHERE database_name = 'upstream' AND schema_name = '%s' ORDER BY table_name",
 			sourceSchema)
 		rows, err = s.target.QueryRows(ctx, query, 100)
-		if err != nil {
-			_ = attacher.DetachDatabase(ctx, "upstream")
-			return fmt.Errorf("failed to list source tables: %w", err)
-		}
 	}
 
-	if len(rows) == 0 {
+	// Attempt 3: duckdb_views() for views (current.* are views)
+	if err != nil || len(rows) == 0 {
+		query = fmt.Sprintf(
+			"SELECT view_name AS table_name FROM duckdb_views() WHERE database_name = 'upstream' AND schema_name = '%s' ORDER BY view_name",
+			sourceSchema)
+		rows, err = s.target.QueryRows(ctx, query, 100)
+	}
+
+	if err != nil || len(rows) == 0 {
 		_ = attacher.DetachDatabase(ctx, "upstream")
-		return fmt.Errorf("no tables found in upstream.%s", sourceSchema)
+		return fmt.Errorf("no tables found in upstream.%s (tried information_schema, duckdb_tables, duckdb_views)", sourceSchema)
 	}
 
 	// Step 4: Copy each table into v0.* and count rows from upstream

@@ -271,7 +271,7 @@ func doRefresh(ctx context.Context, app *App) error {
 
 // doPipeline discovers SQL files in sql/silver/ and sql/feat/, then runs each.
 func doPipeline(ctx context.Context, app *App) error {
-	// Phase 1: silver
+	// Phase 1: silver (runs against silver.duckdb)
 	silverDir := "sql/silver/v1"
 	if _, err := os.Stat(silverDir); os.IsNotExist(err) {
 		silverDir = "sql/silver"
@@ -280,7 +280,46 @@ func doPipeline(ctx context.Context, app *App) error {
 		return err
 	}
 
-	// Phase 2: feat
+	// Phase 2: auto-promote silver v1 so current.* is available for feature refresh
+	silverSvc := services.NewSilverService(app.SilverDB(), app.Logger)
+	if promoteErr := silverSvc.Promote(ctx, 1); promoteErr != nil {
+		app.Logger.Warn("auto-promote silver v1: %v", promoteErr)
+	}
+
+	// Phase 3: refresh feature v0 from silver v1.* (direct copy, no snapshot needed)
+	if app.Multi != nil {
+		ui.Info("Refreshing: copying silver v1.* into feature.duckdb v0...")
+		featureDB := app.FeatureDB()
+
+		// List v1 tables in silver.duckdb
+		silverTables, listErr := app.SilverDB().QueryRows(ctx,
+			"SELECT table_name FROM duckdb_tables() WHERE schema_name = 'v1' ORDER BY table_name", 100)
+		if listErr != nil {
+			return fmt.Errorf("failed to list silver v1 tables: %w", listErr)
+		}
+
+		// ATTACH silver.duckdb READ_ONLY from feature.duckdb
+		if err := featureDB.AttachReadOnly(ctx, app.Cfg.DuckDB.Silver, "silver_src"); err != nil {
+			return fmt.Errorf("failed to attach silver for feature refresh: %w", err)
+		}
+
+		for _, row := range silverTables {
+			tableName := fmt.Sprintf("%v", row["table_name"])
+			copySQL := fmt.Sprintf(
+				"CREATE OR REPLACE TABLE v0.\"%s\" AS SELECT * FROM silver_src.v1.\"%s\"",
+				tableName, tableName)
+			app.Logger.Info("  feature v0.%s from silver v1.%s", tableName, tableName)
+			if err := featureDB.ExecuteSQL(ctx, copySQL); err != nil {
+				_ = featureDB.DetachDatabase(ctx, "silver_src")
+				return fmt.Errorf("failed to copy v1.%s to feature v0: %w", tableName, err)
+			}
+		}
+
+		_ = featureDB.DetachDatabase(ctx, "silver_src")
+		ui.Success(fmt.Sprintf("Feature v0 refresh complete (%d tables)", len(silverTables)))
+	}
+
+	// Phase 4: feat (runs against feature.duckdb)
 	if err := runDir(ctx, app, "sql/feat", "v1", "v0", true); err != nil {
 		return err
 	}
@@ -302,6 +341,28 @@ func doSQLDir(ctx context.Context, app *App) error {
 	}
 
 	export := isFeatDir(runSQLDir)
+
+	// If targeting feat layer in multi-file mode, refresh feature v0 from silver v1
+	if export && app.Multi != nil {
+		ui.Info("Refreshing: copying silver v1.* into feature.duckdb v0...")
+		featureDB := app.FeatureDB()
+		silverTables, listErr := app.SilverDB().QueryRows(ctx,
+			"SELECT table_name FROM duckdb_tables() WHERE schema_name = 'v1' ORDER BY table_name", 100)
+		if listErr == nil && len(silverTables) > 0 {
+			if attachErr := featureDB.AttachReadOnly(ctx, app.Cfg.DuckDB.Silver, "silver_src"); attachErr == nil {
+				for _, row := range silverTables {
+					tableName := fmt.Sprintf("%v", row["table_name"])
+					copySQL := fmt.Sprintf(
+						"CREATE OR REPLACE TABLE v0.\"%s\" AS SELECT * FROM silver_src.v1.\"%s\"",
+						tableName, tableName)
+					_ = featureDB.ExecuteSQL(ctx, copySQL)
+				}
+				_ = featureDB.DetachDatabase(ctx, "silver_src")
+				ui.Success(fmt.Sprintf("Feature v0 refresh complete (%d tables)", len(silverTables)))
+			}
+		}
+	}
+
 	return runDir(ctx, app, runSQLDir, targetSchema, "v0", export)
 }
 
@@ -367,8 +428,8 @@ func runDir(ctx context.Context, app *App, dir string, targetSchema string, sour
 		}
 		_ = tmpFile.Close()
 
-		// Build RunService with source schema
-		svc := buildRunService(app, target).WithSourceSchema(sourceSchema)
+		// Build RunService using the correct target DB (silver or feature)
+		svc := services.NewRunService(targetDB, app.State, app.Logger).WithSourceSchema(sourceSchema)
 
 		// Derive output path for export
 		outputPath := ""

@@ -1,0 +1,24 @@
+release:
+  name: customer_growth
+  version: "0.1.0"
+  description: Customer growth analytics release built from stable silver contracts.
+  environment: dev
+  input:
+    silver_version: v1
+    contracts:
+      - silver.customer_orders@v1
+  models:
+    - customer_ltv
+    - growth_summary
+  output:
+    target: parquet
+    path: outputs/{environment}/{release}/{version}/
+    register_in_feature_db: true
+  validation:
+    require_git_commit: false
+    fail_on_checksum_drift: true
+  promotion:
+    allow:
+      - dev
+      - staging
+      - prod

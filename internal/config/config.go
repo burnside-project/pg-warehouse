@@ -94,6 +94,26 @@ func ApplyDefaults(cfg *models.ProjectConfig) {
 		}
 	}
 
+	// Paths defaults
+	if cfg.Paths.Models == "" {
+		cfg.Paths.Models = "models/"
+	}
+	if cfg.Paths.Contracts == "" {
+		cfg.Paths.Contracts = "contracts/"
+	}
+	if cfg.Paths.Releases == "" {
+		cfg.Paths.Releases = "releases/"
+	}
+	if cfg.Paths.Target == "" {
+		cfg.Paths.Target = "target/"
+	}
+	if cfg.Paths.Outputs == "" {
+		cfg.Paths.Outputs = cfg.Run.DefaultOutputDir
+	}
+	if cfg.Paths.Outputs == "" {
+		cfg.Paths.Outputs = "out/"
+	}
+
 	// Multi-file DuckDB defaults: derive silver/feature paths from raw dir.
 	if cfg.DuckDB.IsMultiFileMode() {
 		dir := filepath.Dir(cfg.DuckDB.Raw)

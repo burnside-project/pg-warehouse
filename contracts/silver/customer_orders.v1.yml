@@ -1,0 +1,27 @@
+contract:
+  name: customer_orders
+  version: 1
+  layer: silver
+  object_name: customer_orders
+  owner: data-platform
+  status: active
+  description: Curated customer order facts from stable silver pipeline.
+  grain: one row per order
+  primary_key:
+    - order_id
+  columns:
+    - name: order_id
+      type: bigint
+      nullable: false
+    - name: customer_id
+      type: bigint
+      nullable: false
+    - name: order_date
+      type: timestamp
+      nullable: false
+    - name: order_total
+      type: double
+      nullable: true
+    - name: order_status
+      type: varchar
+      nullable: false
