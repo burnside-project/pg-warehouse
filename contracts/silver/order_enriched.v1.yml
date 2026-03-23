@@ -1,0 +1,24 @@
+contract:
+  name: order_enriched
+  version: 1
+  layer: silver
+  description: Denormalized orders with payments, shipments, and coupons
+  grain: one row per order
+  primary_key:
+    - order_id
+  columns:
+    - name: order_id
+      type: bigint
+      nullable: false
+    - name: customer_id
+      type: bigint
+      nullable: false
+    - name: order_total
+      type: double
+      nullable: true
+    - name: order_status
+      type: varchar
+      nullable: false
+    - name: order_date
+      type: timestamp
+      nullable: false

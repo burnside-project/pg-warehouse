@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/burnside-project/pg-warehouse/internal/adapters/duckdb"
 	"github.com/burnside-project/pg-warehouse/internal/adapters/fileconfig"
@@ -64,6 +66,47 @@ var initCmd = &cobra.Command{
 		fmt.Println("pg-warehouse initialized successfully")
 		fmt.Printf("  warehouse: %s\n", cfg.DuckDB.Path)
 		fmt.Printf("  state:     %s\n", cfg.State.Path)
+
+		// Scaffold project directories
+		scaffoldDirs := []string{
+			"models/silver",
+			"models/features",
+			"contracts",
+			"releases",
+		}
+		for _, d := range scaffoldDirs {
+			if mkErr := os.MkdirAll(d, 0o755); mkErr != nil {
+				return fmt.Errorf("failed to create directory %s: %w", d, mkErr)
+			}
+		}
+
+		// Create default release file
+		defaultReleaseDir := filepath.Join("releases", "default")
+		if mkErr := os.MkdirAll(defaultReleaseDir, 0o755); mkErr != nil {
+			return fmt.Errorf("failed to create directory %s: %w", defaultReleaseDir, mkErr)
+		}
+		defaultReleasePath := filepath.Join(defaultReleaseDir, "0.1.0.yml")
+		if _, statErr := os.Stat(defaultReleasePath); os.IsNotExist(statErr) {
+			releaseContent := `release:
+  name: default
+  version: "0.1.0"
+  description: Default release — builds all models
+  models: []
+  output:
+    target: parquet
+`
+			if writeErr := os.WriteFile(defaultReleasePath, []byte(releaseContent), 0o644); writeErr != nil {
+				return fmt.Errorf("failed to write %s: %w", defaultReleasePath, writeErr)
+			}
+		}
+
+		fmt.Println()
+		fmt.Println("Scaffolded:")
+		fmt.Println("  models/silver/       — silver layer SQL models")
+		fmt.Println("  models/features/     — feature layer SQL models")
+		fmt.Println("  contracts/           — data contracts (YAML)")
+		fmt.Println("  releases/            — release definitions (YAML)")
+
 		return nil
 	},
 }

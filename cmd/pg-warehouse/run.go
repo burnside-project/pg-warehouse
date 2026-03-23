@@ -131,7 +131,8 @@ var (
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run SQL feature job",
-	Long: `Run SQL transformations against the warehouse.
+	Long: `Compatibility alias for pipeline-style execution.
+For new projects, use: refresh, build, validate, promote.
 
 Modes:
   --refresh        Snapshot raw.duckdb into silver.duckdb v0 (refresh layer)
