@@ -186,8 +186,8 @@ func TestChecksumDifferentContent(t *testing.T) {
 	dir := t.TempDir()
 	path1 := filepath.Join(dir, "a.sql")
 	path2 := filepath.Join(dir, "b.sql")
-	os.WriteFile(path1, []byte("SELECT 1"), 0644)
-	os.WriteFile(path2, []byte("SELECT 2"), 0644)
+	_ = os.WriteFile(path1, []byte("SELECT 1"), 0644)
+	_ = os.WriteFile(path2, []byte("SELECT 2"), 0644)
 
 	sum1, _ := Checksum(path1)
 	sum2, _ := Checksum(path2)
