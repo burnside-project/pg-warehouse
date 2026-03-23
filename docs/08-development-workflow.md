@@ -1,270 +1,390 @@
-# Development Workflow: SQL Pipelines (raw → silver → feat)
+# Development Workflow
 
-This guide covers how to build SQL pipelines using pg-warehouse's Medallion Architecture. You'll learn the directory conventions, how to write silver and feat tables, the CDC pause/resume pattern, and how to run pipelines.
+Build and promote versioned analytical releases from stable curated inputs.
 
 ---
 
-## Medallion Architecture
-
-pg-warehouse uses three DuckDB files with versioned schemas:
+## Architecture
 
 ```
 PostgreSQL (source)
-   ↓ CDC (continuous)
-raw.duckdb           — LOCKED: CDC black box (stage.* + raw.*)
-   ↓ --refresh (snapshot)
+   ↓ CDC (continuous, never stops)
+raw.duckdb           — LOCKED: CDC black box
+   ↓ pg-warehouse refresh
 silver.duckdb
-   ├── v0.*          — LOCKED: raw data mirror (populated by --refresh)
-   ├── v1.*          — User transforms (reads from v0.*)
-   ├── current.*     — Production views (managed by --promote)
-   └── _meta.*       — Internal metadata
-   ↓ --refresh (pipeline copies silver current.* → feature v0.*)
+   ├── v0.*          — raw data snapshot (auto-populated)
+   ├── v1.*          — your transforms
+   ├── current.*     — production views
+   └── _meta.*       — builds, contracts, checksums
+   ↓ auto-refresh during build
 feature.duckdb
-   ├── v0.*          — LOCKED: silver data mirror
-   ├── v1.*          — User aggregations (reads from v0.*)
-   ├── current.*     — Production views
-   └── _meta.*       — Internal metadata
+   ├── v0.*          — silver data snapshot
+   ├── v1.*          — your analytics
+   └── _meta.*       — metadata
    ↓
-out/*.parquet        — Exported analytics
+out/*.parquet        — exported artifacts
 ```
-
-| File | Schema | Access | Written By | Purpose |
-|------|--------|--------|------------|---------|
-| `raw.duckdb` | `raw.*`, `stage.*` | **LOCKED** — DANGER if touched | CDC only | PostgreSQL mirror |
-| `silver.duckdb` | `v0.*` | **LOCKED** — refresh only | `--refresh` | Raw data snapshot |
-| `silver.duckdb` | `v1.*`, `v2.*` | **User writable** | `--sql-dir`, `--pipeline` | Silver transforms |
-| `feature.duckdb` | `v0.*` | **LOCKED** — pipeline only | Internal refresh | Silver data snapshot |
-| `feature.duckdb` | `v1.*` | **User writable** | `--sql-dir`, `--pipeline` | Feature aggregations |
-
-**Strict layering rule:** Silver v1 reads from v0 only. Feature v1 reads from v0 only. pg-warehouse enforces this transparently via `SET schema`.
 
 ---
 
-## Directory Conventions
+## Quick Start (5 minutes)
 
-```
-sql/
-├── silver/
-│   └── v1/
-│       ├── 001_order_enriched.sql
-│       ├── 002_customer_360.sql
-│       ├── 003_product_catalog.sql
-│       ├── 004_promotion_usage.sql
-│       └── 005_product_sales.sql
-├── feat/
-│   ├── 001_sales_summary.sql
-│   ├── 002_customer_analytics.sql
-│   ├── 003_product_performance.sql
-│   ├── 004_promotion_effectiveness.sql
-│   └── 005_inventory_health.sql
+### 1. Initialize
+
+```bash
+pg-warehouse init --config pg-warehouse.yml
 ```
 
-**Rules:**
-- **Numeric prefix** (`001_`) = execution order. Files run in lexicographic sort order — no DAG needed.
-- **One file = one table.** Filename matches the target table name (minus prefix).
-- **Generic SQL** — no schema prefixes needed. pg-warehouse wires source (`v0`) and target (`v1`) schemas transparently.
-- `CREATE OR REPLACE TABLE order_enriched AS ...` — pg-warehouse rewrites this to `CREATE OR REPLACE TABLE v1.order_enriched AS ...`
-- Use `CREATE OR REPLACE TABLE` for idempotency — safe to re-run at any time.
+Creates `raw.duckdb`, `silver.duckdb`, `feature.duckdb`, and scaffolds:
+```
+models/silver/       — silver layer SQL models
+models/features/     — feature layer SQL models
+contracts/           — data contracts (YAML)
+releases/            — release definitions (YAML)
+```
 
----
-
-## Writing a Silver Table
-
-Silver tables clean, join, and enrich data from v0 (the raw data snapshot). SQL files are **generic** — no schema prefixes. pg-warehouse sets the source schema (`v0`) and rewrites `CREATE TABLE` to the target schema (`v1`) transparently.
-
-### Template
+### 2. Write a Model
 
 ```sql
--- ============================================================================
--- Layer:       silver
--- Target:      <table_name>
--- Description: <what this table represents>
--- Sources:     <table1>, <table2>, ...
--- ============================================================================
+-- models/silver/order_enriched.sql
+-- name: order_enriched
+-- materialized: table
 
-CREATE OR REPLACE TABLE <table_name> AS
-SELECT
-    -- columns
-FROM <primary_table>
-LEFT JOIN <secondary_table>
-    ON ...
-```
-
-### Walkthrough: `order_enriched`
-
-This table denormalizes orders by joining order items, payments, and shipments:
-
-```sql
 CREATE OR REPLACE TABLE order_enriched AS
 SELECT
     o.id AS order_id,
     o.customer_id,
-    o.status AS order_status,
-    COUNT(DISTINCT oi.id) AS line_item_count,
-    SUM(oi.quantity * oi.unit_price) AS gross_amount,
-    p.payment_method,
-    s.shipped_at,
-    s.delivered_at
-FROM orders o
-LEFT JOIN order_items oi ON o.id = oi.order_id
-LEFT JOIN payments p ON o.id = p.order_id
-LEFT JOIN shipments s ON o.id = s.order_id
-GROUP BY o.id, o.customer_id, o.status, p.payment_method, s.shipped_at, s.delivered_at;
+    o.total AS order_total,
+    o.placed_at AS order_date
+FROM {{ source('silver', 'orders') }} o;
 ```
 
-At execution time, pg-warehouse rewrites this to `CREATE OR REPLACE TABLE v1.order_enriched AS ...` and sets `SET schema = 'v0'` so all unqualified table reads resolve from the raw data mirror.
+- `source('silver', 'orders')` reads from v0 (raw data snapshot)
+- `CREATE OR REPLACE TABLE` — pg-warehouse rewrites this to target the correct schema
+- No schema prefixes needed in your SQL
 
-**Key patterns:**
-- Aggregate child tables (order items) into the parent grain (one row per order)
-- Use `COALESCE` for nullable aggregates
-- Use `DISTINCT ON` subqueries for latest-record-per-key (e.g., latest payment)
-
----
-
-## Writing a Feat Table
-
-Feat tables produce analytics-ready outputs. They read from v0 (the silver data snapshot). Same generic SQL convention — no schema prefixes.
-
-### Template
+### 3. Write a Feature That Depends on It
 
 ```sql
--- ============================================================================
--- Layer:       feat
--- Target:      <table_name>
--- Description: <what this table powers (dashboard, report, ML feature)>
--- Sources:     <table1>, <table2>, ...
--- ============================================================================
+-- models/features/sales_summary.sql
+-- name: sales_summary
+-- materialized: parquet
 
-CREATE OR REPLACE TABLE <table_name> AS
-SELECT
-    -- dimensions and metrics
-FROM <table>
-GROUP BY ...
-ORDER BY ...;
-```
-
-### Walkthrough: `sales_summary`
-
-Daily sales KPIs aggregated from enriched orders:
-
-```sql
 CREATE OR REPLACE TABLE sales_summary AS
 SELECT
-    CAST(order_date AS DATE) AS sale_date,
+    CAST(order_date::TIMESTAMP AS DATE) AS sale_date,
     COUNT(DISTINCT order_id) AS order_count,
-    SUM(net_amount) AS net_revenue,
-    ROUND(AVG(net_amount), 2) AS avg_order_value
-FROM order_enriched
-GROUP BY CAST(order_date AS DATE)
+    SUM(order_total) AS gross_revenue
+FROM {{ ref('order_enriched') }}
+GROUP BY CAST(order_date::TIMESTAMP AS DATE)
 ORDER BY sale_date;
 ```
 
-**Key patterns:**
-- Aggregate to the grain your dashboard needs (daily, weekly, per-customer, per-product)
-- Use `CASE WHEN` for segmentation and status classification
-- Use window functions (`RANK`, `ROW_NUMBER`) for rankings
-- Every feat table gets exported to Parquet automatically by the pipeline
+- `ref('order_enriched')` creates a dependency — pg-warehouse builds `order_enriched` first
+- No numeric prefixes — the DAG determines execution order
+
+### 4. Build
+
+```bash
+pg-warehouse refresh     # get latest data from CDC
+pg-warehouse build       # builds all models in dependency order
+```
+
+That's it. Models are materialized, Parquet is exported.
 
 ---
 
-## Multi-DuckDB: No CDC Pause Needed
+## How It Works
 
-In multi-file mode, CDC writes to `raw.duckdb` continuously. Pipelines write to `silver.duckdb` and `feature.duckdb` — separate files, no lock conflict. The `--refresh` command snapshots `raw.duckdb` without stopping CDC.
+### Models
+
+A model is a SQL file in `models/`. One file = one table.
 
 ```
-CDC running  →  raw.duckdb locked  →  that's fine, pipeline uses silver.duckdb
---refresh    →  snapshots raw.duckdb to /tmp (filesystem copy, no lock)
---pipeline   →  writes to silver.duckdb and feature.duckdb (no conflict)
+models/
+├── silver/
+│   ├── order_enriched.sql       — reads from source (v0)
+│   ├── customer_360.sql         — reads from source (v0)
+│   └── product_catalog.sql      — reads from source (v0)
+└── features/
+    ├── sales_summary.sql        — reads from ref('order_enriched')
+    ├── customer_analytics.sql   — reads from ref('customer_360')
+    └── product_performance.sql  — reads from ref('product_catalog')
+```
+
+#### Header Metadata
+
+```sql
+-- name: order_enriched          — model name (defaults to filename)
+-- materialized: table           — table, view, or parquet
+-- contract: silver.orders@v1    — optional contract this model satisfies
+-- tags: silver,orders           — optional tags for filtering
+```
+
+#### Dependencies
+
+- `{{ ref('model_name') }}` — depends on another model (DAG edge)
+- `{{ source('silver', 'table') }}` — reads from system-managed v0
+
+Models with no `ref()` are root nodes — they run first. The graph determines everything else.
+
+### Contracts
+
+A contract declares what a table looks like — columns, types, grain.
+
+```yaml
+# contracts/silver/order_enriched.v1.yml
+contract:
+  name: order_enriched
+  version: 1
+  layer: silver
+  grain: one row per order
+  primary_key: [order_id]
+  columns:
+    - name: order_id
+      type: bigint
+      nullable: false
+    - name: customer_id
+      type: bigint
+      nullable: false
+    - name: order_total
+      type: double
+      nullable: true
+```
+
+Contracts are optional. They become valuable when teams depend on each other's outputs.
+
+### Releases
+
+A release bundles models into a versioned, reproducible build.
+
+```yaml
+# releases/default/0.1.0.yml
+release:
+  name: default
+  version: "0.1.0"
+  description: All silver and feature models
+  models:
+    - order_enriched
+    - customer_360
+    - product_catalog
+    - sales_summary
+    - customer_analytics
+    - product_performance
+  output:
+    target: parquet
+```
+
+Releases are optional for simple projects. `pg-warehouse build` without `--release` builds all discovered models.
+
+### The DAG
+
+```
+order_enriched   (source only, no deps)
+customer_360     (source only, no deps)
+product_catalog  (source only, no deps)
+       ↓                ↓              ↓
+sales_summary    customer_analytics    product_performance
+(ref: order_enriched)  (ref: customer_360)  (ref: product_catalog)
+```
+
+`pg-warehouse graph` shows this:
+```
+  INFO  Model DAG (6 nodes)
+    1. order_enriched [silver]
+    2. customer_360 [silver]
+    3. product_catalog [silver]
+    4. sales_summary [features]     <- [order_enriched]
+    5. customer_analytics [features] <- [customer_360]
+    6. product_performance [features] <- [product_catalog]
 ```
 
 ---
 
-## Running the Pipeline
+## Commands
 
-### Full Pipeline (one command)
+### Core Workflow
 
 ```bash
-pg-warehouse run --refresh --pipeline --promote --version 1
+pg-warehouse refresh                    # snapshot raw → silver v0
+pg-warehouse validate                   # check contracts, models, DAG, releases
+pg-warehouse build                      # build all models in DAG order
+pg-warehouse promote --release default --version 0.1.0 --env prod
 ```
 
-This does: refresh raw → silver v0, run silver SQL, run feat SQL, promote v1 to current.
-
-### Run by Layer
+### Build Options
 
 ```bash
-# Silver layer only
-pg-warehouse run --sql-dir ./sql/silver/v1/
+# Build all models (discovers models/, builds in DAG order)
+pg-warehouse build
 
-# Feature layer only (auto-exports to out/)
-pg-warehouse run --sql-dir ./sql/feat/
+# Build a specific release
+pg-warehouse build --release customer_growth --version 0.1.0
 
-# Override target schema (e.g., experimenting with v2)
-pg-warehouse run --sql-dir ./sql/silver/v1/ --target-schema v2
+# Build a single model + its dependencies
+pg-warehouse build --select customer_analytics
 ```
 
-### Run a Single File
+### Inspection
 
 ```bash
-pg-warehouse run --sql-file ./sql/silver/v1/001_order_enriched.sql
+pg-warehouse graph                      # show model dependency DAG
+pg-warehouse history                    # show build and promotion history
+pg-warehouse contracts list             # list data contracts
+pg-warehouse release list               # list releases
+pg-warehouse inspect tables             # list all DuckDB tables
 ```
 
-### Access Guards
+### Maintenance
 
 ```bash
-# These will be REJECTED with DANGER messages:
-pg-warehouse run --sql-dir ./sql/silver/ --target-schema v0    # v0 is locked
-pg-warehouse run --sql-dir ./sql/silver/ --target-schema raw   # raw is locked
-pg-warehouse run --sql-dir ./sql/silver/ --target-schema _meta # _meta is reserved
+pg-warehouse repair                     # fix orphaned builds, stale locks
+pg-warehouse cdc status                 # check CDC health
 ```
 
 ---
 
-## Testing with Preview
+## Step-by-Step: Full Development Cycle
 
-Use `pg-warehouse preview` to validate SQL without writing to DuckDB:
+### 1. Define a Contract (optional)
 
 ```bash
-# Preview a single file
-pg-warehouse preview --sql-file ./sql/feat/001_sales_summary.sql --limit 10
-
-# Preview all feat tables
-make pipeline-preview
+cat > contracts/silver/customer_orders.v1.yml << 'EOF'
+contract:
+  name: customer_orders
+  version: 1
+  layer: silver
+  grain: one row per order
+  primary_key: [order_id]
+  columns:
+    - name: order_id
+      type: bigint
+      nullable: false
+    - name: customer_id
+      type: bigint
+      nullable: false
+    - name: order_total
+      type: double
+      nullable: true
+EOF
 ```
 
-This runs the SELECT portion of your SQL and displays results without creating tables or exporting files. Useful for:
-- Validating joins before committing to silver
-- Spot-checking aggregation logic in feat tables
-- Debugging column types and NULL handling
+### 2. Write Models
+
+```bash
+# Silver model (reads from raw data via source)
+cat > models/silver/customer_orders.sql << 'EOF'
+-- name: customer_orders
+-- materialized: table
+
+CREATE OR REPLACE TABLE customer_orders AS
+SELECT id AS order_id, customer_id, total AS order_total
+FROM {{ source('silver', 'orders') }};
+EOF
+
+# Feature model (reads from silver model via ref)
+cat > models/features/customer_ltv.sql << 'EOF'
+-- name: customer_ltv
+-- materialized: parquet
+
+CREATE OR REPLACE TABLE customer_ltv AS
+SELECT customer_id, SUM(order_total) AS lifetime_value
+FROM {{ ref('customer_orders') }}
+GROUP BY customer_id;
+EOF
+```
+
+### 3. Validate
+
+```bash
+pg-warehouse validate
+```
+
+```
+  INFO  Contracts: found 1 files
+  OK      OK: contracts/silver/customer_orders.v1.yml (silver.customer_orders@v1)
+  INFO  Models: found 2 files
+  OK      OK: models/silver/customer_orders.sql (refs: 0, sources: 1)
+  OK      OK: models/features/customer_ltv.sql (refs: 1, sources: 0)
+  OK    Graph: 2 models, no cycles, valid execution order
+  OK    Validation passed
+```
+
+### 4. View the Graph
+
+```bash
+pg-warehouse graph
+```
+
+```
+  INFO  Model DAG (2 nodes)
+    1. customer_orders [silver]
+    2. customer_ltv [features]     <- [customer_orders]
+```
+
+### 5. Refresh + Build
+
+```bash
+pg-warehouse refresh     # get latest data from CDC
+pg-warehouse build       # builds customer_orders first, then customer_ltv
+```
+
+### 6. Promote
+
+```bash
+pg-warehouse promote --release default --version 0.1.0 --env production
+```
+
+### 7. Verify
+
+```bash
+pg-warehouse history                    # see build record
+pg-warehouse inspect tables             # see materialized tables
+ls -lh out/                             # see Parquet exports
+```
 
 ---
 
-## Adding a New Table: Checklist
+## Adding a New Model
 
-### New Silver Table
+1. Create `models/silver/my_model.sql` or `models/features/my_model.sql`
+2. Use `{{ source('silver', 'table') }}` for raw data reads
+3. Use `{{ ref('other_model') }}` for model-to-model dependencies
+4. Add header: `-- name: my_model` and `-- materialized: table`
+5. Validate: `pg-warehouse validate`
+6. Build: `pg-warehouse build`
 
-1. Create `sql/silver/v1/NNN_<table_name>.sql` (next numeric prefix)
-2. Use `CREATE OR REPLACE TABLE <table_name> AS SELECT ...` (no schema prefix)
-3. Reference source tables without schema prefixes (e.g., `FROM orders`, not `FROM v0.orders`)
-4. Add header comment block (layer, target, description, sources)
-5. Test: `pg-warehouse preview --sql-file ./sql/silver/v1/NNN_<table_name>.sql --limit 10`
-6. Run: `pg-warehouse run --sql-dir ./sql/silver/v1/`
+No numeric prefixes. No release YAML changes (unless using named releases). Just write SQL and build.
 
-### New Feat Table
+---
 
-1. Create `sql/feat/NNN_<table_name>.sql` (next numeric prefix)
-2. Use `CREATE OR REPLACE TABLE <table_name> AS SELECT ...` (no schema prefix)
-3. Reference source tables without schema prefixes (e.g., `FROM order_enriched`)
-4. Add header comment block
-5. Test: `pg-warehouse preview --sql-file ./sql/feat/NNN_<table_name>.sql --limit 10`
-6. Run: `pg-warehouse run --sql-dir ./sql/feat/`
-7. Verify export: `ls -lh ./out/<table_name>.parquet`
+## Access Guards
 
-### Verification
+Protected schemas — user models cannot write to:
 
-```bash
-# Check run history
-sqlite3 .pgwh/state.db 'SELECT * FROM feature_runs ORDER BY started_at DESC LIMIT 5;'
+| Schema | Protection |
+|--------|-----------|
+| `raw` | DANGER — CDC only |
+| `stage` | DANGER — CDC internal |
+| `v0` | DANGER — populated by refresh only |
+| `_meta` | DANGER — pg-warehouse internal |
 
-# Verify Parquet output
-ls -lh ./out/
-```
+---
+
+## Command Reference
+
+| Command | What it does |
+|---------|-------------|
+| `refresh` | Snapshot raw.duckdb → silver.duckdb v0 |
+| `validate` | Check contracts, models, DAG, releases |
+| `build` | Build all models in DAG order |
+| `build --release X --version Y` | Build a specific release |
+| `build --select model_name` | Build one model + its deps |
+| `graph` | Show model dependency DAG |
+| `history` | Build + promotion history |
+| `contracts list` | List data contracts |
+| `release list` | List releases |
+| `promote --release X --version Y --env E` | Promote to environment |
+| `repair` | Fix orphaned builds, stale locks |
+| `inspect tables` | List all DuckDB tables |
+| `cdc status` | Check CDC health |

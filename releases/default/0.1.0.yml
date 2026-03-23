@@ -1,0 +1,18 @@
+release:
+  name: default
+  version: "0.1.0"
+  description: Default release — all silver and feature models
+  models:
+    - order_enriched
+    - customer_360
+    - product_catalog
+    - sales_summary
+    - customer_analytics
+    - product_performance
+  output:
+    target: parquet
+  promotion:
+    allow:
+      - dev
+      - staging
+      - prod

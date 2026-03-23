@@ -106,7 +106,7 @@ psql postgres://warehouse:your_password@your-pg-host:5432/mydb -c "SELECT 1;"
 
 ```bash
 # Create the working directory
-mkdir -p ~/pg-warehouse/{sql/silver,sql/feat,out,.pgwh}
+mkdir -p ~/pg-warehouse
 cd ~/pg-warehouse
 
 # Copy or build the binary
@@ -114,7 +114,7 @@ go build -o ~/pg-warehouse/pg-warehouse ./cmd/pg-warehouse/
 # or: cp /path/to/pg-warehouse ~/pg-warehouse/pg-warehouse
 ```
 
-The resulting directory layout:
+The resulting directory layout (after `pg-warehouse init`):
 
 ```
 ~/pg-warehouse/
@@ -124,8 +124,11 @@ The resulting directory layout:
 ├── silver.duckdb          # Silver development platform (created by init)
 ├── feature.duckdb         # Feature analytics output (created by init)
 ├── .pgwh/state.db         # SQLite state (created by init)
-├── sql/silver/v1/         # Silver layer SQL transforms
-├── sql/feat/              # Feature layer SQL transforms
+├── models/
+│   ├── silver/            # Silver layer SQL models (ref/source)
+│   └── features/          # Feature layer SQL models (ref)
+├── contracts/             # Data contracts (YAML)
+├── releases/              # Release definitions (YAML)
 ├── out/                   # Parquet/CSV exports
 └── cdc.log                # CDC log (when running via nohup)
 ```
@@ -422,66 +425,69 @@ pg-warehouse inspect schema raw.orders   # Describe a table
 pg-warehouse inspect sync-state          # Show sync state
 ```
 
-### How to run the pipeline in pg-warehouse?
+### How to build analytical models in pg-warehouse?
+
+Models use `ref()` for dependencies and `source()` for raw data. pg-warehouse resolves the DAG and builds in the correct order.
 
 ```bash
-# Refresh v0 from raw.duckdb (snapshot + full copy, CDC keeps running)
-pg-warehouse run --refresh
+# Refresh v0 from CDC raw data
+pg-warehouse refresh
 
-# Run a single silver transform (reads from v0.*, writes to v1.*)
-pg-warehouse run --sql-file ./sql/silver/v1/001_order_enriched.sql
+# Validate contracts, models, DAG, releases
+pg-warehouse validate
 
-# Run all silver + feature SQL in numeric order (001.sql, 002.sql...)
-pg-warehouse run --pipeline
+# Build all models (discovers models/, builds in DAG order)
+pg-warehouse build
 
-# Promote current version (swaps current.* views)
-pg-warehouse run --promote
+# Build a specific release
+pg-warehouse build --release customer_growth --version 0.1.0
 
-# Production: refresh + pipeline + promote in one command
-pg-warehouse run --refresh --pipeline --promote
+# Build a single model + its dependencies
+pg-warehouse build --select customer_ltv
+
+# Show the dependency graph
+pg-warehouse graph
+
+# Promote to an environment
+pg-warehouse promote --release default --version 0.1.0 --env production
 ```
 
-> SQL files use numeric prefixes (001_, 002_) to determine execution order. The `--pipeline` flag discovers, sorts, and runs them sequentially. See [Silver Versioning](10-silver-versioning.md) and [Multi-DuckDB Architecture](09-multi-duckdb-architecture.md) for the full workflow.
+> See [Development Workflow](08-development-workflow.md) for the full guide: writing models, contracts, releases, and the step-by-step development cycle.
 
-### How to develop silver SQL in pg-warehouse?
+### How to develop a model?
 
 ```bash
-# 1. Get fresh data (once per session)
-pg-warehouse run --refresh
+# 1. Write a model in models/silver/ or models/features/
+cat > models/silver/customer_orders.sql << 'EOF'
+-- name: customer_orders
+-- materialized: table
+CREATE OR REPLACE TABLE customer_orders AS
+SELECT id AS order_id, customer_id, total AS order_total
+FROM {{ source('silver', 'orders') }};
+EOF
 
-# 2. Iterate on silver SQL (v0 is frozen, fast iteration)
-pg-warehouse run --sql-file ./sql/silver/v1/002_customer_360.sql
-# tweak SQL, re-run, check results...
+# 2. Validate
+pg-warehouse validate
 
-# 3. Preview results
-pg-warehouse preview --sql-file ./sql/silver/v1/002_customer_360.sql --limit 10
+# 3. Refresh + build
+pg-warehouse refresh
+pg-warehouse build
 
-# 4. Run full pipeline and promote
-pg-warehouse run --pipeline --promote
+# 4. Inspect results
+pg-warehouse inspect tables
 ```
 
-### How to manage Silver versions in pg-warehouse?
-
-See [Silver Versioning](10-silver-versioning.md).
+### How to view build history?
 
 ```bash
-# Create a new version
-pg-warehouse silver create-version --label "add shipping address"
+pg-warehouse history
+```
 
-# Build transforms for v2 (reads from v0.*, writes to v2.*)
-pg-warehouse run --sql-file ./sql/silver/v2/001_order_enriched.sql
+### How to list contracts and releases?
 
-# Compare versions
-pg-warehouse silver compare --base v1 --candidate v2
-
-# Promote v2 to production (swaps current.* views)
-pg-warehouse run --promote --version 2
-
-# List all versions
-pg-warehouse silver list-versions
-
-# Drop an archived version
-pg-warehouse silver drop-version --version 1
+```bash
+pg-warehouse contracts list
+pg-warehouse release list
 ```
 
 ### How to export from pg-warehouse?
@@ -592,7 +598,17 @@ sync:
       watermark_column: updated_at     # Column for incremental sync (timestamp or serial)
 
 # ──────────────────────────────────────────────────────────────────────
-# Run (Feature Pipelines)
+# Paths (Models, Contracts, Releases)
+# ──────────────────────────────────────────────────────────────────────
+paths:
+  models: models/                      # SQL model files (default: models/)
+  contracts: contracts/                # Contract YAML files (default: contracts/)
+  releases: releases/                  # Release YAML files (default: releases/)
+  target: target/                      # Generated artifacts (default: target/)
+  outputs: out/                        # Parquet/CSV exports (default: out/)
+
+# ──────────────────────────────────────────────────────────────────────
+# Run (Compatibility — use paths section for new projects)
 # ──────────────────────────────────────────────────────────────────────
 run:
   default_output_dir: ./out            # Default export directory (default: ./out)
@@ -611,12 +627,13 @@ logging:
 | Section | Purpose | Required |
 |---------|---------|----------|
 | `project` | Names the warehouse instance; stored in state DB for identification | Yes |
-| `postgres` | PostgreSQL connection settings and pool tuning | Yes |
-| `duckdb` | Path to the DuckDB warehouse file (single file, four schemas) | Yes |
+| `postgres` | PostgreSQL connection settings and pool tuning | Yes (for CDC/sync) |
+| `duckdb` | Paths to DuckDB files (raw, silver, feature) | Yes |
 | `state` | Path to the SQLite state DB that tracks sync/CDC progress | No (defaults to `.pgwh/state.db`) |
 | `cdc` | CDC configuration: publication name, slot, and table list | No (disabled by default) |
 | `sync` | Batch sync mode, batch size, and per-table mapping | Yes (if using sync) |
-| `run` | Default output directory and file format for feature pipelines | No (has defaults) |
+| `paths` | Directories for models, contracts, releases, target, outputs | No (has defaults) |
+| `run` | Default output directory and file format (compatibility) | No (has defaults) |
 | `logging` | Log level and format | No (defaults to `info` / `text`) |
 
 ## Pre-Seeding Details
@@ -716,7 +733,12 @@ These values are applied when the corresponding config field is omitted. Defined
 | `cdc.epoch_max_rows` | `10000` | Max rows before epoch commit |
 | `sync.default_batch_size` | `50000` | Rows per sync batch |
 | `sync.tables[].target_schema` | `raw` | DuckDB target schema per table |
-| `run.default_output_dir` | `./out` | Export output directory |
+| `paths.models` | `models/` | SQL model files directory |
+| `paths.contracts` | `contracts/` | Contract YAML files directory |
+| `paths.releases` | `releases/` | Release YAML files directory |
+| `paths.target` | `target/` | Generated artifacts directory |
+| `paths.outputs` | `out/` | Parquet/CSV export directory |
+| `run.default_output_dir` | `./out` | Export output directory (compatibility) |
 | `run.default_file_type` | `parquet` | `parquet` or `csv` |
 | `logging.level` | `info` | `debug`, `info`, `warn`, `error` |
 | `logging.format` | `text` | `text` or `json` |

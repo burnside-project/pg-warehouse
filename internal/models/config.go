@@ -10,6 +10,7 @@ type ProjectConfig struct {
 	Sync     SyncCfg     `yaml:"sync"`
 	Run      RunCfg      `yaml:"run"`
 	Logging  LoggingCfg  `yaml:"logging"`
+	Paths    PathsCfg    `yaml:"paths"`
 }
 
 // ProjectInfo holds the project name.
@@ -85,4 +86,13 @@ type RunCfg struct {
 type LoggingCfg struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+}
+
+// PathsCfg holds directory path configuration for models, contracts, etc.
+type PathsCfg struct {
+	Models    string `yaml:"models"`
+	Contracts string `yaml:"contracts"`
+	Releases  string `yaml:"releases"`
+	Target    string `yaml:"target"`
+	Outputs   string `yaml:"outputs"`
 }

@@ -32,7 +32,7 @@ var silverCreateVersionCmd = &cobra.Command{
 		}
 		defer app.Close()
 
-		svc := services.NewSilverService(app.WH, app.Logger)
+		svc := services.NewSilverService(app.SilverDB(), app.Logger)
 		version, err := svc.CreateVersion(ctx, silverLabel)
 		if err != nil {
 			return fmt.Errorf("failed to create version: %w", err)
@@ -63,7 +63,7 @@ var silverPromoteCmd = &cobra.Command{
 		}
 		defer app.Close()
 
-		svc := services.NewSilverService(app.WH, app.Logger)
+		svc := services.NewSilverService(app.SilverDB(), app.Logger)
 		if err := svc.Promote(ctx, silverVersion); err != nil {
 			return fmt.Errorf("failed to promote version: %w", err)
 		}
@@ -92,7 +92,7 @@ var silverListVersionsCmd = &cobra.Command{
 		}
 		defer app.Close()
 
-		svc := services.NewSilverService(app.WH, app.Logger)
+		svc := services.NewSilverService(app.SilverDB(), app.Logger)
 		versions, err := svc.ListVersions(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to list versions: %w", err)
@@ -133,7 +133,7 @@ var silverDropVersionCmd = &cobra.Command{
 		}
 		defer app.Close()
 
-		svc := services.NewSilverService(app.WH, app.Logger)
+		svc := services.NewSilverService(app.SilverDB(), app.Logger)
 		if err := svc.DropVersion(ctx, silverVersion); err != nil {
 			return fmt.Errorf("failed to drop version: %w", err)
 		}

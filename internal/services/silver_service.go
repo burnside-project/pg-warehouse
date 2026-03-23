@@ -99,7 +99,12 @@ func (s *SilverService) Promote(ctx context.Context, version int) error {
 		}
 	}
 
-	// Update version status
+	// Auto-register version in _meta.versions if not already registered
+	_ = s.silver.ExecuteSQL(ctx, fmt.Sprintf(
+		"INSERT INTO _meta.versions (version, label, status) VALUES (%d, 'v%d', '%s') ON CONFLICT (version) DO NOTHING",
+		version, version, models.SilverVersionExperiment))
+
+	// Archive any currently active version
 	err = s.silver.ExecuteSQL(ctx, fmt.Sprintf(
 		"UPDATE _meta.versions SET status = '%s' WHERE status = '%s'",
 		models.SilverVersionArchived, models.SilverVersionActive))
@@ -107,6 +112,7 @@ func (s *SilverService) Promote(ctx context.Context, version int) error {
 		return fmt.Errorf("archive previous version: %w", err)
 	}
 
+	// Promote the target version
 	err = s.silver.ExecuteSQL(ctx, fmt.Sprintf(
 		"UPDATE _meta.versions SET status = '%s', promoted_at = current_timestamp WHERE version = %d",
 		models.SilverVersionActive, version))

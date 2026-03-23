@@ -69,15 +69,46 @@ func (w *Warehouse) SetSchema(ctx context.Context, schema string) error {
 }
 
 // ExecuteSQL runs arbitrary SQL against the warehouse.
+// Skips empty statements and comment-only statements.
 func (w *Warehouse) ExecuteSQL(ctx context.Context, sqlStr string) error {
 	statements := splitStatements(sqlStr)
 	for _, stmt := range statements {
 		stmt = strings.TrimSpace(stmt)
-		if stmt == "" {
+		if !isActualSQL(stmt) {
 			continue
 		}
 		if _, err := w.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("failed to execute SQL: %w\nstatement: %s", err, stmt)
+		}
+	}
+	return nil
+}
+
+// ValidateSQL checks SQL syntax without executing it using EXPLAIN.
+// Returns nil if the SQL is valid, or an error describing the syntax issue.
+func (w *Warehouse) ValidateSQL(ctx context.Context, sqlStr string) error {
+	statements := splitStatements(sqlStr)
+	for _, stmt := range statements {
+		stmt = strings.TrimSpace(stmt)
+		if !isActualSQL(stmt) {
+			continue
+		}
+		// Skip DDL that EXPLAIN can't handle (CREATE SCHEMA, DROP, etc.)
+		upper := strings.ToUpper(strings.TrimSpace(stmt))
+		if strings.HasPrefix(upper, "CREATE SCHEMA") ||
+			strings.HasPrefix(upper, "DROP ") ||
+			strings.HasPrefix(upper, "ALTER ") ||
+			strings.HasPrefix(upper, "SET ") ||
+			strings.HasPrefix(upper, "INSERT ") ||
+			strings.HasPrefix(upper, "DELETE ") ||
+			strings.HasPrefix(upper, "UPDATE ") ||
+			strings.HasPrefix(upper, "ATTACH ") ||
+			strings.HasPrefix(upper, "DETACH ") {
+			continue
+		}
+		explainSQL := "EXPLAIN " + stmt
+		if _, err := w.db.ExecContext(ctx, explainSQL); err != nil {
+			return fmt.Errorf("SQL validation failed: %w\nstatement: %s", err, stmt)
 		}
 	}
 	return nil
@@ -409,4 +440,28 @@ func pgTypeToDuckDB(pgType string) string {
 // splitStatements splits a multi-statement SQL string by semicolons.
 func splitStatements(sql string) []string {
 	return strings.Split(sql, ";")
+}
+
+// isActualSQL returns true if the string contains executable SQL (not just comments/whitespace).
+func isActualSQL(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Strip all comment lines and check if anything remains
+	lines := strings.Split(s, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+		// Found a non-comment, non-empty line
+		return true
+	}
+	return false
 }
