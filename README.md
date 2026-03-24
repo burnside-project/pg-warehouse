@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-  Mirror PostgreSQL &rarr; DuckDB. Run SQL pipelines. Export Parquet. No cloud required.
+  Mirror PostgreSQL &rarr; DuckDB. Build versioned analytical releases. Export Parquet. No cloud required.
 </p>
 
 <p align="center">
@@ -29,20 +29,29 @@ Initialized warehouse
   raw:     ./raw.duckdb
   silver:  ./silver.duckdb
   feature: ./feature.duckdb
-  state:   .pgwh/state.db
+Scaffolded:
+  models/silver/       — silver layer SQL models
+  models/features/     — feature layer SQL models
+  contracts/           — data contracts (YAML)
+  releases/            — release definitions (YAML)
 
 $ pg-warehouse cdc start
 Starting CDC streaming (slot=pgwh_slot, publication=pgwh_pub)
 [INFO] starting CDC stream from LSN 76/20155180
 
-$ pg-warehouse run --refresh --pipeline --promote --version 1
-  OK    Refresh complete
-  INFO  Pipeline [silver]: sql/silver/v1/001_order_enriched.sql -> v1.order_enriched (source: v0)
-  OK      v1.order_enriched: 6,764,334 rows
-  INFO  Pipeline [feature]: sql/feat/001_sales_summary.sql -> v1.sales_summary (source: v0)
-  OK      v1.sales_summary: 1,247 rows
-  OK    Pipeline complete
-  OK    Promoted version 1 to production
+$ pg-warehouse refresh
+  OK    Refresh complete (14 tables, 50,010,917 rows)
+
+$ pg-warehouse build
+  INFO  Build all: 6 models discovered
+  INFO  Plan: 6 steps
+    1. order_enriched -> v1.order_enriched (silver)
+    2. customer_360 -> v1.customer_360 (silver)
+    3. product_catalog -> v1.product_catalog (silver)
+    4. sales_summary -> v1.sales_summary (feature)
+    5. customer_analytics -> v1.customer_analytics (feature)
+    6. product_performance -> v1.product_performance (feature)
+  OK    Build complete: all@adhoc
 ```
 
 ## Documentation
@@ -56,17 +65,15 @@ $ pg-warehouse run --refresh --pipeline --promote --version 1
 | [Sync Modes](docs/05-sync.md) | Full vs. incremental vs. CDC |
 | [Configuration](docs/06-configuration.md) | YAML reference |
 | [Open-Core Strategy](docs/07-open-core.md) | OSS vs. commercial boundary |
-| [Development Workflow](docs/08-development-workflow.md) | SQL pipelines: raw → silver → feat |
+| [Development Workflow](docs/08-development-workflow.md) | Models, contracts, DAG-resolved builds |
 | [Multi-DuckDB Architecture](docs/09-multi-duckdb-architecture.md) | Zero-downtime CDC with three DuckDB files |
-| [Silver Versioning](docs/10-silver-versioning.md) | Versioned silver development: create, compare, promote |
-| [Data Model and AI](docs/11-data-model-and-ai.md) | Semantic layer (YAML) + AI-powered Q&A |
 
 
 ## Why pg-warehouse?
 
-Getting data out of PostgreSQL for analytics or ML usually means stitching together 
-Python scripts, cron jobs, and a cloud warehouse you don't need. pg-warehouse replaces that with 
-a single binary: sync tables into an embedded DuckDB, run SQL feature pipelines, 
+Getting data out of PostgreSQL for analytics or ML usually means stitching together
+Python scripts, cron jobs, and a cloud warehouse you don't need. pg-warehouse replaces that with
+a single binary: sync tables into an embedded DuckDB, build versioned analytical releases,
 and export to Parquet or CSV. Everything runs locally, on your machine, with no external dependencies.
 
 ## What makes pg-warehouse a local-first Data Warehouse?
@@ -86,55 +93,33 @@ and export to Parquet or CSV. Everything runs locally, on your machine, with no 
 | PostgreSQL sync | Full, incremental, CDC | Full only | Full, incremental, CDC | -- |
 | Local analytics | DuckDB (columnar) | -- | -- | DuckDB adapter |
 | Parquet/CSV export | Built-in | -- | Via connectors | Via packages |
-| SQL pipelines | Built-in | -- | -- | Core strength |
+| Model graph (DAG) | Built-in | -- | -- | Core strength |
+| Contracts | Built-in | -- | -- | Via packages |
 | Infrastructure | Single binary | Single binary | Docker + Java | Python + adapter |
 | Cloud required | No | No | Optional | Optional |
-| Scheduling | -- | cron | Built-in | Built-in |
 
 ## What does it solve?
 A local-first Data Warehouse engine that mirrors PostgreSQL data into DuckDB using native PostgreSQL CDC.
-Best for teams that want CDC + SQL transforms + Parquet without standing up Kafka, Spark, or a warehouse
-
-## How do I do data wrangling?
-Built-in Transformation pipeline using SQL and exports analytics datasets to Parquet.
-https://github.com/burnside-project/pg-warehouse/blob/main/docs/08-development-workflow.md
-
-## Is it Simple and Cost Effective?
-Instead of building complex pipelines with Kafka, Spark, and cloud warehouses, pg-warehouse 
-lets you run analytics pipelines locally on your PostgreSQL with just SQL!
-https://github.com/burnside-project/pg-warehouse/blob/main/docs/01-architecture.md
-
-
-## Do I need complex pipeline from PostgreSQL?
-No. pg-warehouse uses production-grade PostgreSQL native CDC logical replication + LSN with the pgoutput protocol.
-This is like running a replication node and we are just ingesting raw data in real time using PostgreSQL Write Ahead Logs.
-https://github.com/burnside-project/pg-warehouse/blob/main/docs/04-cdc.md
-
-## How does it different from PostgreSQL OLAP Plugins?
-PostgreSQL OLAP plugins → run analytics inside Postgres
-pg-warehouse → moves analytics outside Postgres into DuckDB. 
-pg-warehouse can runs completely isolated in another node
-https://github.com/burnside-project/pg-warehouse/blob/main/docs/01-architecture.md
+Best for teams that want CDC + SQL transforms + Parquet without standing up Kafka, Spark, or a warehouse.
 
 ## How does it work?
+
 pg-warehouse uses three DuckDB files following Medallion Architecture:
 
 | File | Layer | Purpose |
 |------|-------|---------|
 | `raw.duckdb` | Bronze | CDC black box. Deduped PostgreSQL mirror. CDC owns it exclusively. |
-| `silver.duckdb` | Silver | Development platform. v0 = raw copy, v1 = your transforms, current = production. |
-| `feature.duckdb` | Gold | Analytics output. v0 = silver copy, v1 = aggregations, current = dashboards. |
+| `silver.duckdb` | Silver | Development platform. v0 = raw snapshot, v1 = your models. |
+| `feature.duckdb` | Gold | Analytics output. v0 = silver snapshot, v1 = your features. |
+
+Models use `ref()` for dependencies. pg-warehouse resolves the DAG and builds in the correct order.
 
 ```bash
-# CDC streams continuously (never stops)
-pg-warehouse cdc start
-
-# Developer: refresh raw data, run transforms, promote
-pg-warehouse run --refresh --pipeline --promote
+pg-warehouse refresh     # snapshot raw → silver v0
+pg-warehouse build       # build all models in DAG order
 ```
 
-https://github.com/burnside-project/pg-warehouse/blob/main/docs/09-multi-duckdb-architecture.md
-
+https://github.com/burnside-project/pg-warehouse/blob/main/docs/08-development-workflow.md
 
 ## Install
 
@@ -165,66 +150,52 @@ pg-warehouse runs from a single working directory. All paths in `pg-warehouse.ym
 ~/pg-warehouse/                  # Working directory
 ├── pg-warehouse                 # Binary
 ├── pg-warehouse.yml             # Configuration
-├── raw.duckdb                   # CDC black box (deduped PostgreSQL mirror)
-├── silver.duckdb                # Silver development platform (v0 + v1 + current)
-├── feature.duckdb               # Feature analytics output (v0 + v1 + current)
+├── raw.duckdb                   # CDC black box
+├── silver.duckdb                # Silver development platform
+├── feature.duckdb               # Feature analytics output
 ├── .pgwh/
-│   └── state.db                 # SQLite state (sync/CDC/epoch progress)
-├── sql/
-│   ├── silver/v1/               # Silver SQL transforms (001.sql, 002.sql...)
-│   └── feat/                    # Feature SQL transforms (001.sql, 002.sql...)
+│   └── state.db                 # SQLite state (sync/CDC/builds)
+├── models/
+│   ├── silver/                  # Silver layer SQL models
+│   └── features/                # Feature layer SQL models
+├── contracts/                   # Data contracts (YAML)
+├── releases/                    # Release definitions (YAML)
 ├── out/                         # Parquet/CSV exports
 └── cdc.log                      # CDC log (when running via nohup)
 ```
 
-For systemd-managed deployments, the service file should point to this directory:
-
-```ini
-[Service]
-WorkingDirectory=/home/<user>/pg-warehouse
-ExecStart=/home/<user>/pg-warehouse/pg-warehouse cdc start --config pg-warehouse.yml
-```
-
 ## Quickstart (2 minutes)
 
-**1. Initialize** -- creates config, DuckDB files, and state DB:
+**1. Initialize** — creates DuckDB files, state DB, and scaffolds directories:
 
 ```console
 $ mkdir -p ~/pg-warehouse && cd ~/pg-warehouse
 $ pg-warehouse init --config pg-warehouse.yml
 ```
 
-**2. Start CDC** -- stream changes from PostgreSQL:
+**2. Start CDC** — stream changes from PostgreSQL:
 
 ```console
 $ pg-warehouse cdc setup --config pg-warehouse.yml
 $ nohup pg-warehouse cdc start --config pg-warehouse.yml > cdc.log 2>&1 &
 ```
 
-**3. Inspect** -- verify what landed:
+**3. Refresh** — snapshot raw data into silver v0:
 
 ```console
-$ pg-warehouse inspect tables
+$ pg-warehouse refresh
 ```
 
-**4. Run the pipeline** -- refresh raw data, build silver + feature transforms, export:
+**4. Build** — build all models in DAG order:
 
 ```console
-$ pg-warehouse run --refresh --pipeline --promote --version 1
+$ pg-warehouse build
 ```
 
-Or run by layer:
+**5. Validate** — check contracts, models, DAG, releases:
 
 ```console
-$ pg-warehouse run --refresh                     # snapshot raw → silver v0
-$ pg-warehouse run --sql-dir ./sql/silver/v1/    # silver layer only
-$ pg-warehouse run --sql-dir ./sql/feat/         # feature layer + Parquet export
-```
-
-**5. Validate setup**:
-
-```console
-$ pg-warehouse doctor
+$ pg-warehouse validate
 ```
 
 ## Features
@@ -235,14 +206,20 @@ $ pg-warehouse doctor
 - [x] CDC streaming via PostgreSQL logical replication (pglogrepl)
 - [x] Automatic sync mode detection per table
 
-**Analytics**
-- [x] Embedded DuckDB columnar warehouse (Medallion Architecture)
-- [x] SQL pipelines targeting `silver.*` (curated) and `feat.*` (analytics-ready) schemas
-- [x] Multi-DuckDB mode: zero-downtime CDC with epoch-consistent reads
-- [x] Versioned silver development: create, compare, promote, rollback
-- [x] Data model semantic layer (YAML) for AI-powered Q&A
-- [x] Preview query results before export
-- [x] Fast pre-seeding via `COPY TO CSV` + `--from-lsn` (minutes vs. hours)
+**Analytical Releases**
+- [x] Models with `ref()` and `source()` dependency declarations
+- [x] DAG-resolved build ordering (topological sort, cycle detection)
+- [x] Data contracts (YAML) for schema validation
+- [x] Named releases with versioned model bundles
+- [x] Terraform-style `--plan` with SQL validation via EXPLAIN
+- [x] Build history and promotion tracking in `_meta`
+- [x] Partial builds: `build --select model_name`
+
+**Multi-DuckDB Architecture**
+- [x] 3-file isolation: raw (CDC), silver (transforms), feature (analytics)
+- [x] Zero-downtime CDC — pipeline never stops CDC
+- [x] Reserved schema protection (raw, stage, v0, _meta) with DANGER enforcement
+- [x] CDC guardrails: max_lag_bytes, drop_slot_on_exit, health checks
 
 **Export**
 - [x] Parquet export
@@ -250,25 +227,40 @@ $ pg-warehouse doctor
 
 **Developer Experience**
 - [x] Single binary, zero external dependencies
-- [x] `doctor` command for config and connectivity validation
+- [x] `validate` command for contracts, models, DAG, and SQL
+- [x] `graph` command to visualize model dependencies
+- [x] `history` command for build and promotion audit trail
 - [x] SQLite state tracking that survives warehouse rebuilds
-- [x] YAML configuration
+- [x] `repair` command for fixing orphaned builds
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `refresh` | Snapshot raw.duckdb → silver.duckdb v0 |
+| `validate` | Check contracts, models, DAG, releases, SQL syntax |
+| `build` | Build all models in DAG order |
+| `build --release X --version Y` | Build a specific release |
+| `build --select model_name` | Build one model + its dependencies |
+| `graph` | Show model dependency DAG |
+| `history` | Build + promotion history |
+| `contracts list` | List data contracts |
+| `release list` | List releases |
+| `promote --release X --version Y --env E` | Promote to environment |
+| `inspect tables` | List all DuckDB tables |
+| `cdc status` | Check CDC health |
+| `repair` | Fix orphaned builds, stale locks |
 
 ## E-Commerce Recipe
 
-A complete working example with 14 source tables, Medallion pipeline, data model, Docker dashboard, and AI Q&A:
+A complete working example with 14 source tables, 6 models, contracts, and releases:
 
 ```bash
-# Run the pipeline
-./examples/ecommerce-recipe/run-pipeline.sh
-
-# Launch the dashboard (with AI Q&A)
-cd examples/ecommerce-recipe/dashboard
-ANTHROPIC_API_KEY=sk-ant-... docker compose up --build
-# Open http://localhost:8050
+pg-warehouse refresh
+pg-warehouse build
 ```
 
-See [examples/ecommerce-recipe/README.md](examples/ecommerce-recipe/README.md) for full details.
+See [examples/ecommerce-recipe/README.md](examples/ecommerce-recipe/README.md) for full details including dashboard and AI Q&A.
 
 ## Architecture
 
@@ -278,7 +270,7 @@ See [docs/01-architecture.md](docs/01-architecture.md) for the full design.
 
 ## Open Core
 
-The open-source edition covers the full developer workflow: sync, CDC, DuckDB, SQL pipelines, and local export. Production operations -- scheduling, cloud storage export (S3/GCS/Iceberg), remote state, RBAC, and lineage -- are commercial.
+The open-source edition covers the full developer workflow: sync, CDC, DuckDB, model graph, contracts, releases, and local export. Production operations -- scheduling, cloud storage export (S3/GCS/Iceberg), remote state, RBAC, and lineage -- are commercial.
 
 See [docs/07-open-core.md](docs/07-open-core.md) for the boundary details.
 
