@@ -16,11 +16,38 @@
 </p>
 
 ---
+> ### Refresh — snapshot raw CDC data into silver v0 (14 tables, ~12s)
 ![1.png](assets/1.png)
 ---
+> ### Build — resolve DAG and build all 6 models: silver → feature → Parquet
 ![2.png](assets/2.png)
 ---
+> ### Validate — check contracts, models, graph, releases (zero errors = green)
 ![3.png](assets/3.png)
+---
+> ### Graph — show model dependency DAG (who depends on whom)
+![4.png](assets/4.png)
+---
+> ### Contracts — list registered data shape contracts
+![5.png](assets/5.png)
+---
+> ### Releases — list versioned release definitions
+![6.png](assets/6.png)
+---
+> ### Promote — deploy a release to an environment (dev/staging/prod)
+![7.png](assets/7.png)
+---
+> ### Inspect — list all tables across all DuckDB files
+![8.png](assets/8.png)
+---
+> ### CDC Status — check replication health (lag, slot, streaming)
+![9.png](assets/9.png)
+---
+> ### Repair — fix orphaned builds and stale locks
+![10.png](assets/10.png)
+---
+> ### Repair — fix orphaned builds and stale locks
+![11.png](assets/11.png)
 
 
 ```console
