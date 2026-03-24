@@ -91,7 +91,7 @@ Models use `ref()` for dependencies. pg-warehouse resolves the DAG and builds in
 > ### Repair — fix orphaned builds and stale locks
 ![10.png](assets/10.png)
 ---
-> ### Repair — fix orphaned builds and stale locks
+> ### Pipeline History
 ![11.png](assets/11.png)
 
 
