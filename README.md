@@ -15,87 +15,6 @@
   <a href="https://github.com/burnside-project/pg-warehouse/stargazers"><img src="https://img.shields.io/github/stars/burnside-project/pg-warehouse?style=social" alt="Stars"></a>
 </p>
 
----
-> ### Refresh — snapshot raw CDC data into silver v0 (14 tables, ~12s)
-![1.png](assets/1.png)
----
-> ### Build — resolve DAG and build all 6 models: silver → feature → Parquet
-![2.png](assets/2.png)
----
-> ### Validate — check contracts, models, graph, releases (zero errors = green)
-![3.png](assets/3.png)
----
-> ### Graph — show model dependency DAG (who depends on whom)
-![4.png](assets/4.png)
----
-> ### Contracts — list registered data shape contracts
-![5.png](assets/5.png)
----
-> ### Releases — list versioned release definitions
-![6.png](assets/6.png)
----
-> ### Promote — deploy a release to an environment (dev/staging/prod)
-![7.png](assets/7.png)
----
-> ### Inspect — list all tables across all DuckDB files
-![8.png](assets/8.png)
----
-> ### CDC Status — check replication health (lag, slot, streaming)
-![9.png](assets/9.png)
----
-> ### Repair — fix orphaned builds and stale locks
-![10.png](assets/10.png)
----
-> ### Repair — fix orphaned builds and stale locks
-![11.png](assets/11.png)
-
-
-```console
-$ pg-warehouse init --config pg-warehouse.yml
-Initialized warehouse
-  raw:     ./raw.duckdb
-  silver:  ./silver.duckdb
-  feature: ./feature.duckdb
-Scaffolded:
-  models/silver/       — silver layer SQL models
-  models/features/     — feature layer SQL models
-  contracts/           — data contracts (YAML)
-  releases/            — release definitions (YAML)
-
-$ pg-warehouse cdc start
-Starting CDC streaming (slot=pgwh_slot, publication=pgwh_pub)
-[INFO] starting CDC stream from LSN 76/20155180
-
-$ pg-warehouse refresh
-  OK    Refresh complete (14 tables, 50,010,917 rows)
-
-$ pg-warehouse build
-  INFO  Build all: 6 models discovered
-  INFO  Plan: 6 steps
-    1. order_enriched -> v1.order_enriched (silver)
-    2. customer_360 -> v1.customer_360 (silver)
-    3. product_catalog -> v1.product_catalog (silver)
-    4. sales_summary -> v1.sales_summary (feature)
-    5. customer_analytics -> v1.customer_analytics (feature)
-    6. product_performance -> v1.product_performance (feature)
-  OK    Build complete: all@adhoc
-```
-
-## Documentation
-
-| Doc | Description |
-|-----|-------------|
-| [Architecture](docs/01-architecture.md) | Hexagonal design, layers, port interfaces |
-| [Quickstart](docs/02-quickstart.md) | Full walkthrough with examples |
-| [State Database](docs/03-state-db.md) | SQLite schema and semantics |
-| [CDC Guide](docs/04-cdc.md) | Logical replication setup and lifecycle |
-| [Sync Modes](docs/05-sync.md) | Full vs. incremental vs. CDC |
-| [Configuration](docs/06-configuration.md) | YAML reference |
-| [Open-Core Strategy](docs/07-open-core.md) | OSS vs. commercial boundary |
-| [Development Workflow](docs/08-development-workflow.md) | Models, contracts, DAG-resolved builds |
-| [Multi-DuckDB Architecture](docs/09-multi-duckdb-architecture.md) | Zero-downtime CDC with three DuckDB files |
-
-
 ## Why pg-warehouse?
 
 Getting data out of PostgreSQL for analytics or ML usually means stitching together
@@ -140,6 +59,58 @@ pg-warehouse uses three DuckDB files following Medallion Architecture:
 | `feature.duckdb` | Gold | Analytics output. v0 = silver snapshot, v1 = your features. |
 
 Models use `ref()` for dependencies. pg-warehouse resolves the DAG and builds in the correct order.
+
+---
+> ### Refresh — snapshot raw CDC data into silver v0 (14 tables, ~12s)
+![1.png](assets/1.png)
+---
+> ### Build — resolve DAG and build all 6 models: silver → feature → Parquet
+![2.png](assets/2.png)
+---
+> ### Validate — check contracts, models, graph, releases (zero errors = green)
+![3.png](assets/3.png)
+---
+> ### Graph — show model dependency DAG (who depends on whom)
+![4.png](assets/4.png)
+---
+> ### Contracts — list registered data shape contracts
+![5.png](assets/5.png)
+---
+> ### Releases — list versioned release definitions
+![6.png](assets/6.png)
+---
+> ### Promote — deploy a release to an environment (dev/staging/prod)
+![7.png](assets/7.png)
+---
+> ### Inspect — list all tables across all DuckDB files
+![8.png](assets/8.png)
+---
+> ### CDC Status — check replication health (lag, slot, streaming)
+![9.png](assets/9.png)
+---
+> ### Repair — fix orphaned builds and stale locks
+![10.png](assets/10.png)
+---
+> ### Repair — fix orphaned builds and stale locks
+![11.png](assets/11.png)
+
+
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [Architecture](docs/01-architecture.md) | Hexagonal design, layers, port interfaces |
+| [Quickstart](docs/02-quickstart.md) | Full walkthrough with examples |
+| [State Database](docs/03-state-db.md) | SQLite schema and semantics |
+| [CDC Guide](docs/04-cdc.md) | Logical replication setup and lifecycle |
+| [Sync Modes](docs/05-sync.md) | Full vs. incremental vs. CDC |
+| [Configuration](docs/06-configuration.md) | YAML reference |
+| [Open-Core Strategy](docs/07-open-core.md) | OSS vs. commercial boundary |
+| [Development Workflow](docs/08-development-workflow.md) | Models, contracts, DAG-resolved builds |
+| [Multi-DuckDB Architecture](docs/09-multi-duckdb-architecture.md) | Zero-downtime CDC with three DuckDB files |
+
+
+
 
 ```bash
 pg-warehouse refresh     # snapshot raw → silver v0
