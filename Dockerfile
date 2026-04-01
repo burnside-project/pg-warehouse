@@ -1,5 +1,5 @@
 # Build stage — using Debian for glibc compatibility with go-duckdb
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends git gcc g++ && rm -rf /var/lib/apt/lists/*
 
